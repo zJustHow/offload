@@ -8,7 +8,7 @@ public struct Answer: Sendable {
 }
 
 /// Answers a question from memory only, citing where each fact came from. Retrieval is hybrid
-/// search; whether raw excerpts are included follows the egress policy for the answering model.
+/// search over both notes and raw excerpts.
 public final class MemoryQA: @unchecked Sendable {
     private let memory: MemoryService
     private let model: LanguageModel
@@ -18,7 +18,7 @@ public final class MemoryQA: @unchecked Sendable {
     public func ask(_ question: String) async throws -> Answer {
         var opts = SearchOptions()
         opts.limit = 8
-        let hits = try await memory.search(question, options: opts, audience: model.capabilities)
+        let hits = try await memory.search(question, options: opts)
         guard !hits.isEmpty else {
             return Answer(text: "I could not find anything about that in your knowledge base.", sources: [], hits: [])
         }

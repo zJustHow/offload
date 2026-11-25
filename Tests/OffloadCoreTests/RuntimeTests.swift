@@ -26,7 +26,6 @@ final class RuntimeTests: XCTestCase {
         var cfg = OffloadConfig()
         cfg.folders = ["~/Notes"]
         cfg.knowledge = ModelProfile(provider: .anthropic, model: "claude-sonnet-5-5", keyAccount: "anthropic-main")
-        cfg.egress.rawSnippetsToHostedModels = true
         try paths.save(cfg)
         XCTAssertEqual(try paths.loadConfig(), cfg)
         let attrs = try FileManager.default.attributesOfItem(atPath: paths.config.path)
@@ -34,7 +33,6 @@ final class RuntimeTests: XCTestCase {
         let text = try String(contentsOf: paths.config, encoding: .utf8)
         XCTAssertTrue(text.contains("anthropic-main"), "only the Keychain account name is stored")
         XCTAssertEqual(try AppPaths(support: home.appendingPathComponent("nothing")).loadConfig(), OffloadConfig(), "missing config means defaults")
-        XCTAssertFalse(OffloadConfig().egress.rawSnippetsToHostedModels, "raw snippets stay local by default")
     }
 
     func testDefaultLocationIsOwnDirectoryAndARelocatedHomeIsNeverEscaped() {
@@ -54,13 +52,13 @@ final class RuntimeTests: XCTestCase {
     }
 
     func testConfigFromAnOlderVersionStillLoads() throws {
-        // Written before notes/SiYuan/Gmail existed: the newer keys are simply absent.
+        // Written before notes/SiYuan/Gmail existed: the newer keys are simply absent. The retired
+        // "egress" key is still present in such files and must be ignored, not rejected.
         let old = ##"{"folders":["/Users/x/Notes"],"mailEnabled":true,"triage":{"provider":"apple"},"egress":{"rawSnippetsToHostedModels":true},"scheduleHour":4}"##
         let cfg = try JSONDecoder().decode(OffloadConfig.self, from: Data(old.utf8))
         XCTAssertEqual(cfg.folders, ["/Users/x/Notes"])
         XCTAssertTrue(cfg.mailEnabled)
         XCTAssertEqual(cfg.scheduleHour, 4)
-        XCTAssertTrue(cfg.egress.rawSnippetsToHostedModels)
         XCTAssertFalse(cfg.appleNotesEnabled); XCTAssertFalse(cfg.gmailEnabled); XCTAssertNil(cfg.siyuanPath)
         XCTAssertEqual(try JSONDecoder().decode(OffloadConfig.self, from: Data("{}".utf8)), OffloadConfig())
     }
@@ -152,12 +150,11 @@ final class RuntimeTests: XCTestCase {
 
         // The point of the whole design: summaries for the big picture, raw text for the specifics.
         var opts = SearchOptions(); opts.limit = 5
-        let local = ModelCapabilities(contextChars: 50_000, isLocal: true)
-        let hits = try await live.memory.search("LD-55821", options: opts, audience: local)
+        let hits = try await live.memory.search("LD-55821", options: opts)
         let raw = try XCTUnwrap(hits.first { $0.kind == .chunk })
         XCTAssertTrue(raw.text.contains("LD-55821"), "the exact reference lives only in the raw index; the note does not have it")
         XCTAssertEqual(raw.citedByNotes, ["Home/Apartment.md"], "…and the raw hit points back to the note that summarizes it")
-        let noteHits = try await live.memory.search("Mr. Alvarez Mission Street rent", options: opts, audience: local)
+        let noteHits = try await live.memory.search("Mr. Alvarez Mission Street rent", options: opts)
         XCTAssertEqual(noteHits.first { $0.kind == .note }?.notePath, "Home/Apartment.md")
 
         // A second cycle is a no-op: nothing new to read, nothing pending to merge.

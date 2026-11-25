@@ -19,17 +19,37 @@ public struct FilesConnector: Connector {
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "tiff", "gif", "webp"]
     static let skippedDirectories: Set<String> = ["node_modules", ".git", "Library", "build", "DerivedData", ".build", "__pycache__", "venv", ".venv"]
 
-    public init(root: URL) { self.root = root }
+    /// `root` with every symlink resolved. A directory walk reports items by their real path
+    /// (`/private/var/...` for a folder chosen as `/var/...`), and so does FSEvents; item keys are
+    /// these real paths, so a path from either source maps to the same item.
+    let realRoot: String
+
+    public init(root: URL) {
+        self.root = root
+        self.realRoot = Self.realPath(root.path)
+    }
+
+    static func realPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
 
     public func list() async throws -> [WorkItemRef] { try scan() }
 
     /// Synchronous on purpose: `FileManager.DirectoryEnumerator` may not be iterated from async code.
     func scan() throws -> [WorkItemRef] {
         guard FileManager.default.fileExists(atPath: root.path) else { throw ConnectorError.unreadable("folder not found: \(root.path)") }
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
+        return try walk(root)
+    }
+
+    static let fileKeys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
+
+    private func walk(_ start: URL) throws -> [WorkItemRef] {
+        let keys = Self.fileKeys
         guard let walker = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants])
-        else { throw ConnectorError.unreadable(root.path) }
+            at: start, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        else { throw ConnectorError.unreadable(start.path) }
 
         var refs: [WorkItemRef] = []
         for case let url as URL in walker {
@@ -39,22 +59,82 @@ public struct FilesConnector: Connector {
                 if Self.skippedDirectories.contains(url.lastPathComponent) { walker.skipDescendants() }
                 continue
             }
-            guard values?.isRegularFile == true else { continue }
-            let ext = url.pathExtension.lowercased()
-            let isImage = Self.imageExtensions.contains(ext)
-            guard Self.authoredExtensions.contains(ext) || Self.savedTextExtensions.contains(ext) || isImage else { continue }
-            let size = values?.fileSize ?? 0
-            if size == 0 || size > maxFileBytes { continue }
-            let mtime = values?.contentModificationDate
-            refs.append(WorkItemRef(
-                key: url.path,
-                fingerprint: "\(size)-\(Int(mtime?.timeIntervalSince1970 ?? 0))",
-                date: mtime, title: url.deletingPathExtension().lastPathComponent, uri: url.path,
-                trust: Self.authoredExtensions.contains(ext) ? .authored : .saved))
+            guard values?.isRegularFile == true, let ref = fileRef(url, values) else { continue }
+            refs.append(ref)
         }
         return refs
     }
 
+    /// The ref for one regular file, or nil when its type or size makes it uninteresting.
+    private func fileRef(_ url: URL, _ values: URLResourceValues?) -> WorkItemRef? {
+        let ext = url.pathExtension.lowercased()
+        let isImage = Self.imageExtensions.contains(ext)
+        guard Self.authoredExtensions.contains(ext) || Self.savedTextExtensions.contains(ext) || isImage else { return nil }
+        let size = values?.fileSize ?? 0
+        if size == 0 || size > maxFileBytes { return nil }
+        let mtime = values?.contentModificationDate
+        return WorkItemRef(
+            key: url.path,
+            fingerprint: "\(size)-\(Int(mtime?.timeIntervalSince1970 ?? 0))",
+            date: mtime, title: url.deletingPathExtension().lastPathComponent, uri: url.path,
+            trust: Self.authoredExtensions.contains(ext) ? .authored : .saved)
+    }
+}
+
+// MARK: - Scoped reads (live sync)
+
+extension FilesConnector: PathScopedConnector {
+    public func scopedPath(for path: String) -> String? {
+        // Either the folder as the user chose it, or its real path as the file system reports it.
+        guard let rel = Self.relative(path, to: realRoot) ?? Self.relative(path, to: root.path) else { return nil }
+        let parts = rel.split(separator: "/").map(String.init)
+        // Mirrors what the enumerator skips: hidden files and folders, and the folders in
+        // `skippedDirectories` (plus everything beneath them).
+        if parts.contains(where: { $0.hasPrefix(".") || Self.skippedDirectories.contains($0) }) { return nil }
+        return parts.reduce(URL(fileURLWithPath: realRoot)) { $0.appendingPathComponent($1) }.path
+    }
+
+    public func refs(under path: String) throws -> [WorkItemRef] {
+        guard FileManager.default.fileExists(atPath: root.path) else { throw ConnectorError.unreadable("folder not found: \(root.path)") }
+        guard let scoped = scopedPath(for: path) else { return [] }
+        let url = URL(fileURLWithPath: scoped)
+        // A full scan never reaches anything behind a symlink or inside a package (a .app, .rtfd...).
+        for ancestor in Self.ancestors(of: url, below: URL(fileURLWithPath: realRoot)) {
+            let v = try? ancestor.resourceValues(forKeys: [.isSymbolicLinkKey, .isPackageKey])
+            if v?.isSymbolicLink == true || v?.isPackage == true { return [] }
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return [] }
+        let values = try? url.resourceValues(forKeys: Set(Self.fileKeys + [.isPackageKey]))
+        if values?.isSymbolicLink == true { return [] }
+        if isDirectory.boolValue {
+            if url.path != realRoot, values?.isPackage == true { return [] }
+            return try walk(url)
+        }
+        guard values?.isRegularFile == true else { return [] }
+        return fileRef(url, values).map { [$0] } ?? []
+    }
+
+    /// `path` relative to `base` ("" for the base itself), or nil when it is not inside it.
+    private static func relative(_ path: String, to base: String) -> String? {
+        if path == base { return "" }
+        let prefix = base.hasSuffix("/") ? base : base + "/"
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : nil
+    }
+
+    /// The folders between `root` (exclusive) and `url` (exclusive).
+    private static func ancestors(of url: URL, below root: URL) -> [URL] {
+        var out: [URL] = []
+        var current = url.deletingLastPathComponent()
+        while current.path.count > root.path.count, current.path.hasPrefix(root.path) {
+            out.append(current)
+            current = current.deletingLastPathComponent()
+        }
+        return out
+    }
+}
+
+extension FilesConnector {
     public func load(_ ref: WorkItemRef) async throws -> ItemContent {
         let url = URL(fileURLWithPath: ref.key)
         let ext = url.pathExtension.lowercased()

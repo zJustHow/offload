@@ -7,7 +7,7 @@ agreed) are still reachable even though the readable notes are summaries.
 
 It is written in Swift and ships as a CLI and a menu bar app. The design: on-device triage, a Markdown
 knowledge base, a stronger model that merges summaries into notes, and assistants on top. The retrieval
-layer, provenance links, edit-operation protocol, egress policy and local MCP server are built in.
+layer, provenance links, edit-operation protocol and local MCP server are built in.
 
 ```
 files · mail · chats · calendar
@@ -74,6 +74,7 @@ APIs and create an OAuth client of type **Desktop app**. The token is kept in yo
 | `doctor`, `status` | environment checks; what has been read and indexed |
 | `config …`, `sources …` | models, embeddings, privacy switch, folders, chats, mail, calendar, Apple Notes, SiYuan, Google |
 | `cycle` | read what is new, update the knowledge base, prepare suggestions |
+| `watch` | keep search following your folders as files are added, edited, moved or deleted (the app does this by default, and catches up at launch on what changed while it was closed; folders you have not read yet are left alone) |
 | `search <q>` | `--mode hybrid\|lexical\|exact\|vector`, `--notes-only` |
 | `ask <q>` | answer from memory, citing only the sources used |
 | `draft` | draft a reply to text on stdin, or `--screen` to read the screen |
@@ -115,8 +116,17 @@ and APIs are *hosted*: keep `triage` on the built-in or a local model, since it 
   check, SSNs, national IDs with checksum, passport numbers, API keys, passwords) drops any summary
   that leaks an identifier and **redacts** the same patterns from raw text before it is indexed.
 * The knowledge base and the index live on this Mac (the index is excluded from backups and Spotlight).
-* A **hosted** model (or any MCP client) sees your *notes* but **not raw excerpts** unless you turn on
-  `config egress --raw-to-hosted on`. Local models are never restricted.
+* Raw excerpts (already redacted by the pass above) are returned to every consumer: local or hosted
+  models and MCP clients alike. There is no switch to withhold them, so a hosted model that answers,
+  drafts or acts receives those excerpts. If that is not acceptable, use local models for `assistant`
+  and `knowledge`, and do not connect an MCP client.
+* **Everything that leaves this Mac is scanned again.** Text sent to a hosted model (`RedactingModel`),
+  to a remote embedding endpoint (`RedactingEmbedder`) or returned to an MCP client goes through the same
+  `PIIScan.redact` first. That covers what never touches the index: the raw item given to `triage`,
+  notes, on-screen text read by a reply draft or the agent, and search queries. Models and embedders on
+  this Mac (on-device, or a server on localhost) receive text unchanged. Limits: it is the same regex
+  set, so the same blind spots (names, addresses, free-text medical detail), and **screenshots are not
+  scanned**. The pass can also over-redact, for example a long Luhn-valid order number.
 * Chats are opt-in per chat; unselected chats are never read. Source databases are read from a copy.
 * The agent asks before anything irreversible, can only open files Offload itself indexed, and
   treats everything it reads as data, not instructions.
@@ -133,7 +143,7 @@ Sources/OffloadPreviews renders every UI state to PNG (`offload-previews <dir>`)
   Pipeline/   triage ("bouncer"), PII scan/redaction, incremental ingestion
   Sources/    files, iMessage, WhatsApp, Apple Mail (.emlx), Apple Notes, SiYuan, Gmail, Calendars (EventKit, Google)
   Vault/      knowledge builder: edit operations, validation, staging + atomic swap
-  Agents/     memory service (egress policy), Q&A, reply drafter, agent loop, proactive planner
+  Agents/     memory service, Q&A, reply drafter, agent loop, proactive planner
   MCP/        stdio MCP server
   Runtime/    config, Keychain, wiring, the nightly cycle, health checks, reset, wording shared by app and CLI, log
   Scheduler/  LaunchAgent, power check

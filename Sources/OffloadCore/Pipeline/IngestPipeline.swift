@@ -19,6 +19,15 @@ public struct IngestReport: Sendable, Equatable {
     public var chunks = 0
     public var timedOutSources: [String] = []
     public var sourceErrors: [String: String] = [:]
+
+    /// Adds another report's counts into this one.
+    public mutating func absorb(_ other: IngestReport) {
+        listed += other.listed; skippedUpToDate += other.skippedUpToDate; survivors += other.survivors
+        junk += other.junk; sensitive += other.sensitive; failed += other.failed; deleted += other.deleted
+        chunks += other.chunks
+        timedOutSources += other.timedOutSources
+        sourceErrors.merge(other.sourceErrors) { $1 }
+    }
 }
 
 /// Connector -> triage -> (survivors only) redact -> chunk -> index.
@@ -64,10 +73,50 @@ public final class IngestPipeline: @unchecked Sendable {
             return
         }
         report.listed += refs.count
+        let existing = connector.listsAllItems ? try store.items(bucket: connector.bucket) : []
+        let completed = try await reconcile(connector, refs: refs, existing: existing, into: &report, budget: budget, loadTimeout: loadTimeout, maxItems: maxItems, progress: progress)
+        if completed { try store.markRead(bucket: connector.bucket) }
+    }
 
-        if connector.listsAllItems {
+    /// Applies file-system changes to just these paths, without listing the whole source: a path
+    /// that is gone has its items (and their chunks and vectors) deleted, one that is new or
+    /// changed is read, triaged and indexed like in a full run. Folders are reconciled as a whole,
+    /// so a moved or deleted folder is handled by the one path the file system reports for it.
+    public func sync(
+        paths: [String], connector: PathScopedConnector, loadTimeout: TimeInterval = 30,
+        progress: (@Sendable (IngestProgress) -> Void)? = nil
+    ) async throws -> IngestReport {
+        var report = IngestReport()
+        var refs: [WorkItemRef] = [], existing: [ItemRecord] = []
+        for scope in Self.outermost(paths.compactMap(connector.scopedPath(for:))) {
+            do { refs += try connector.refs(under: scope) } catch {
+                // Same rule as a full run: an unreadable source is an error, never "empty".
+                report.sourceErrors[connector.bucket] = "\(error)"
+                return report
+            }
+            existing += try store.items(bucket: connector.bucket, under: scope)
+        }
+        report.listed = refs.count
+        _ = try await reconcile(connector, refs: refs, existing: existing, into: &report, budget: .infinity, loadTimeout: loadTimeout, maxItems: nil, progress: progress)
+        return report
+    }
+
+    /// Drops duplicates and any path that lies inside another path of the set.
+    static func outermost(_ paths: [String]) -> [String] {
+        let unique = Array(Set(paths)).sorted()
+        return unique.filter { p in !unique.contains { $0 != p && p.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") } }
+    }
+
+    /// `existing` is what the store holds for the part of the source that `refs` covers: anything in
+    /// it that `refs` no longer lists is deleted; whatever in `refs` is new or changed is processed.
+    /// Returns false when it stopped early (cancelled, out of time, or capped by `maxItems`).
+    private func reconcile(
+        _ connector: Connector, refs: [WorkItemRef], existing: [ItemRecord], into report: inout IngestReport,
+        budget: TimeInterval, loadTimeout: TimeInterval, maxItems: Int?, progress: (@Sendable (IngestProgress) -> Void)?
+    ) async throws -> Bool {
+        if !existing.isEmpty {
             let present = Set(refs.map { Hashing.stableID(connector.bucket, $0.key) })
-            for old in try store.items(bucket: connector.bucket) where !present.contains(old.id) {
+            for old in existing where !present.contains(old.id) {
                 try store.deleteItem(id: old.id)
                 report.deleted += 1
             }
@@ -85,15 +134,17 @@ public final class IngestPipeline: @unchecked Sendable {
             let id = Hashing.stableID(connector.bucket, ref.key)
             if try store.isUpToDate(id: id, fingerprint: ref.fingerprint) { report.skippedUpToDate += 1 } else { pending.append((ref, id)) }
         }
+        let capped = maxItems.map { pending.count > $0 } ?? false
         if let maxItems { pending = Array(pending.prefix(maxItems)) }
 
         let started = Date()
         for (index, (ref, id)) in pending.enumerated() {
-            if Task.isCancelled { return }
-            if Date().timeIntervalSince(started) > budget { report.timedOutSources.append(connector.bucket); return }
+            if Task.isCancelled { return false }
+            if Date().timeIntervalSince(started) > budget { report.timedOutSources.append(connector.bucket); return false }
             let verdict = try await process(ref, id: id, connector: connector, loadTimeout: loadTimeout, report: &report)
             progress?(IngestProgress(bucket: connector.bucket, done: index + 1, total: pending.count, lastTitle: ref.title, lastVerdict: verdict))
         }
+        return !capped
     }
 
     private func process(

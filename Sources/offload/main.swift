@@ -37,7 +37,6 @@ SETUP
   config show
   config model <triage|knowledge|assistant> --provider <apple|openai|anthropic|claude-cli|codex-cli> [--model M] [--base-url U] [--key-stdin] [--vision]
   config embedding --kind <apple-contextual|apple-sentence|hashing|openai> [--model M] [--base-url U] [--key-stdin]
-  config egress --raw-to-hosted <on|off>   allow raw-text excerpts to reach hosted models (default off)
   config vault <path>
   sources add-folder <path> | remove-folder <path> | list
   sources chats <imessage|whatsapp>        list chats you could opt into
@@ -48,12 +47,13 @@ SETUP
 
 USE
   cycle [--max N] [--no-vault] [--no-proactive] [--quiet] [--require-ac]   read, update knowledge, prepare suggestions
+  watch [--quiet-period SECONDS]           keep the index following your folders as files change (Ctrl-C to stop)
   search <query> [--mode hybrid|lexical|exact|vector] [--limit N] [--notes-only] [--local]
   ask <question>                           answer from your memory, with sources
   draft [--instruction T] [--screen]       draft a reply to text on stdin (or the screen)
   agent <task> [--computer] [--yes] [--max-steps N]
   suggestions [list | dismiss <id> | done <id>]
-  mcp [--allow-raw]                        MCP server on stdio for Claude Desktop / Claude Code
+  mcp                                      MCP server on stdio for Claude Desktop / Claude Code
   eval                                     compare retrieval strategies on the bundled corpus
   schedule <install|uninstall|status>      run the cycle nightly through launchd
   reset --yes                              delete the index (not your notes or source files)
@@ -62,7 +62,7 @@ USE
 let argv = Array(CommandLine.arguments.dropFirst())
 guard let command = argv.first else { out(usage); exit(0) }
 let rest = Array(argv.dropFirst())
-let valueFlags: Set<String> = ["client-id", "max", "mode", "limit", "instruction", "provider", "model", "base-url", "kind", "raw-to-hosted", "max-steps"]
+let valueFlags: Set<String> = ["client-id", "max", "mode", "limit", "instruction", "provider", "model", "base-url", "kind", "max-steps", "quiet-period"]
 let args = Args(rest, valueFlags: valueFlags)
 
 do {
@@ -73,6 +73,7 @@ do {
     case "config": try Commands.config(args)
     case "sources": try await Commands.sources(args)
     case "cycle", "ingest": try await Commands.cycle(args, ingestOnly: command == "ingest")
+    case "watch": try await Commands.watch(args)
     case "search": try await Commands.search(args)
     case "ask": try await Commands.ask(args)
     case "draft": try await Commands.draft(args)

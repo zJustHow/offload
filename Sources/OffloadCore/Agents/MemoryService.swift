@@ -1,17 +1,5 @@
 import Foundation
 
-/// What may leave this Mac when a *hosted* model is the consumer.
-///
-/// The knowledge base (summaries and notes) is the product's designed-for-sharing layer, so it is
-/// always available. The raw-text index is different: it holds the specifics that summaries
-/// deliberately drop, so handing snippets of it to a hosted model is a separate, explicit choice.
-/// Local models (on-device or on localhost) are never restricted.
-public struct EgressPolicy: Sendable, Codable, Equatable {
-    public var rawSnippetsToHostedModels: Bool
-    public init(rawSnippetsToHostedModels: Bool = false) { self.rawSnippetsToHostedModels = rawSnippetsToHostedModels }
-    public func allowsRaw(for audience: ModelCapabilities) -> Bool { audience.isLocal || rawSnippetsToHostedModels }
-}
-
 public struct ItemView: Sendable {
     public var id: String
     public var title: String
@@ -19,30 +7,25 @@ public struct ItemView: Sendable {
     public var uri: String
     public var date: Date?
     public var summary: String?
-    /// Redacted original text; nil when the audience is not allowed to see raw text.
-    public var rawText: String?
+    /// The original text, already redacted by `PIIScan` before it was indexed.
+    public var rawText: String
     public var citedByNotes: [String]
 }
 
 /// The single doorway through which assistants read memory: hybrid search, notes, and the
-/// original text behind a note. Every method takes the audience (the model that will see the
-/// result) so the egress policy is enforced in one place instead of in each caller.
+/// original text behind a note. Raw excerpts are returned to every caller; what protects them is
+/// the `PIIScan.redact` pass applied before they were indexed.
 public final class MemoryService: @unchecked Sendable {
     public let store: KnowledgeStore
     public let searcher: HybridSearcher
     public let workspace: VaultWorkspace
-    public var policy: EgressPolicy
 
-    public init(store: KnowledgeStore, searcher: HybridSearcher, workspace: VaultWorkspace, policy: EgressPolicy = EgressPolicy()) {
-        self.store = store; self.searcher = searcher; self.workspace = workspace; self.policy = policy
+    public init(store: KnowledgeStore, searcher: HybridSearcher, workspace: VaultWorkspace) {
+        self.store = store; self.searcher = searcher; self.workspace = workspace
     }
 
-    public func search(_ query: String, options: SearchOptions = SearchOptions(), audience: ModelCapabilities) async throws -> [SearchHit] {
-        var opts = options
-        if !policy.allowsRaw(for: audience) { opts.include.remove(.chunk) }
-        var hits = try await searcher.search(query, options: opts)
-        if !policy.allowsRaw(for: audience) { hits.removeAll { $0.kind == .chunk } }
-        return hits
+    public func search(_ query: String, options: SearchOptions = SearchOptions()) async throws -> [SearchHit] {
+        try await searcher.search(query, options: options)
     }
 
     /// Folder tree plus the README portrait: the cheap "what do you know about me" overview.
@@ -74,10 +57,9 @@ public final class MemoryService: @unchecked Sendable {
         return nil
     }
 
-    public func item(id: String, audience: ModelCapabilities) throws -> ItemView? {
+    public func item(id: String) throws -> ItemView? {
         guard let it = try store.item(id: id), it.verdict == .survivor else { return nil }
-        let raw: String? = policy.allowsRaw(for: audience)
-            ? try store.chunks(itemID: id).map(\.text).joined(separator: "\n\n") : nil
+        let raw = try store.chunks(itemID: id).map(\.text).joined(separator: "\n\n")
         return ItemView(id: it.id, title: it.title, kind: it.kind, uri: it.uri, date: it.itemDate, summary: it.summary, rawText: raw, citedByNotes: try store.notesCiting(itemID: id))
     }
 

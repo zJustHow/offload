@@ -48,8 +48,10 @@ public struct OffloadConfig: Codable, Equatable, Sendable {
     /// Answers questions, drafts replies and runs the agent.
     public var assistant: ModelProfile = .apple
     public var embedding: EmbeddingProfile = .default
-    public var egress = EgressPolicy()
     public var scheduleHour = 3
+    /// Keep the index following the chosen folders while the app runs (see `LiveSync`). Files are
+    /// read and triaged as they change, but only in folders that have already been read once.
+    public var liveSync = true
     /// The first-run guide: where the user is, and whether they have finished (or skipped) it.
     public var onboardingStep = 0
     public var onboardingCompleted = false
@@ -75,8 +77,8 @@ public struct OffloadConfig: Codable, Equatable, Sendable {
         knowledge = try c.decodeIfPresent(ModelProfile.self, forKey: .knowledge) ?? d.knowledge
         assistant = try c.decodeIfPresent(ModelProfile.self, forKey: .assistant) ?? d.assistant
         embedding = try c.decodeIfPresent(EmbeddingProfile.self, forKey: .embedding) ?? d.embedding
-        egress = try c.decodeIfPresent(EgressPolicy.self, forKey: .egress) ?? d.egress
         scheduleHour = try c.decodeIfPresent(Int.self, forKey: .scheduleHour) ?? d.scheduleHour
+        liveSync = try c.decodeIfPresent(Bool.self, forKey: .liveSync) ?? d.liveSync
         onboardingStep = try c.decodeIfPresent(Int.self, forKey: .onboardingStep) ?? d.onboardingStep
         onboardingCompleted = try c.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? d.onboardingCompleted
     }

@@ -29,7 +29,6 @@ extension AppModel {
     private func makeOnboarding(startAt: OnboardingModel.Step) -> OnboardingModel {
         let m = OnboardingModel(startAt: startAt)
         m.analysis = analysis
-        m.allowCloudExcerpts = config.egress.rawSnippetsToHostedModels
         m.sources = sourceOptions()
 
         m.onToggleSource = { [weak self, weak m] id, on in
@@ -65,7 +64,6 @@ extension AppModel {
             }
         }
         m.onSelectModel = { [weak self] id in self?.applyModelChoice(id) }
-        m.onAllowExcerpts = { [weak self] on in self?.update { $0.egress.rawSnippetsToHostedModels = on } }
         m.onStartAnalysis = { [weak self] in self?.startCycle() }
         m.onStopAnalysis = { [weak self] in self?.stopCycle() }
         m.onStepChanged = { [weak self] step in self?.update { $0.onboardingStep = step.rawValue } }

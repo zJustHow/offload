@@ -38,6 +38,15 @@ final class VaultOpsTests: XCTestCase {
         XCTAssertTrue(r.rejected.isEmpty)
     }
 
+    func testPlaceholdersEchoedByAHostedModelNeverOverwriteANote() {
+        let original = "# Card\nThe user pays with card 4111 1111 1111 1111 every month for the gym membership.\n"
+        var notes = ["Money/Card.md": original]
+        let echoed = "# Card\nThe user pays with card [REDACTED:card] every month for the gym membership.\n"
+        let r = VaultOps.apply([VaultOperation(kind: .rewrite, path: "Money/Card.md", content: echoed)], to: &notes)
+        XCTAssertEqual(notes["Money/Card.md"], original)
+        XCTAssertEqual(r.rejected.map(\.reason), [.redactedPlaceholder])
+    }
+
     func testAppendIsIdempotent() {
         var notes = ["A/Note.md": "# Note\nFirst paragraph.\n\nSecond paragraph.\n"]
         let op = VaultOperation(kind: .append, path: "A/Note.md", content: "second   PARAGRAPH.\n\nA genuinely new fact.\n\nA genuinely new fact.")

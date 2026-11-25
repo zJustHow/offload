@@ -144,7 +144,7 @@ final class AgentTests: XCTestCase {
         XCTAssertEqual(computer.log.filter { $0.hasPrefix("openFile") }, ["openFile /docs/lease.md"], "only files Offload indexed can be opened")
     }
 
-    func testHostedModelsDoNotGetRawItemTextByDefault() async {
+    func testReadItemReturnsRawTextToAnyModel() async {
         let replies = Replies([
             #"{"thought":"x","tool":"read_item","args":{"id":"lease"}}"#,
             #"{"thought":"x","tool":"finish","args":{"status":"DONE","summary":"ok"}}"#,
@@ -152,8 +152,7 @@ final class AgentTests: XCTestCase {
         _ = await makeAgent(replies, isLocal: false, computer: nil).run(task: "t")
         let obs = replies.requests[1].messages.last!.text
         XCTAssertTrue(obs.contains("Summary: Lease summary"))
-        XCTAssertFalse(obs.contains("LD-55821"))
-        XCTAssertTrue(obs.contains("not available to this model"))
+        XCTAssertTrue(obs.contains("LD-55821"))
     }
 
     func testAskUserAndVisionScreenshots() async {

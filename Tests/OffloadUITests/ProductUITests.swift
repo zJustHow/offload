@@ -66,10 +66,6 @@ final class OnboardingModelTests: XCTestCase {
         m.select(model: "gone"); m.select(model: "nope"); m.select(model: "builtin")
         XCTAssertEqual(chosen, ["builtin"])
         XCTAssertEqual(m.selectedModel, "builtin")
-        var allowed: [Bool] = []
-        m.onAllowExcerpts = { allowed.append($0) }
-        m.setAllowCloudExcerpts(true)
-        XCTAssertEqual(allowed, [true]); XCTAssertTrue(m.allowCloudExcerpts)
     }
 
     func testTheAnalysisStepAdaptsToWhatIsHappening() {

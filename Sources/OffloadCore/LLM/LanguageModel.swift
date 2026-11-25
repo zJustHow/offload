@@ -31,7 +31,7 @@ public struct ModelCapabilities: Sendable {
     public var vision: Bool
     /// Conservative budget for one request's prompt, in characters.
     public var contextChars: Int
-    /// True when inference stays on this Mac. Hosted models are subject to the egress policy.
+    /// True when inference stays on this Mac (on-device, or a server on localhost).
     public var isLocal: Bool
     public init(vision: Bool = false, contextChars: Int, isLocal: Bool) {
         self.vision = vision; self.contextChars = contextChars; self.isLocal = isLocal

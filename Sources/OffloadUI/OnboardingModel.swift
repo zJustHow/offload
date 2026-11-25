@@ -77,7 +77,6 @@ public final class OnboardingModel: ObservableObject {
     @Published public var permissions: [PermissionRow] = []
     @Published public var models: [ModelOption] = []
     @Published public var selectedModel = "builtin"
-    @Published public var allowCloudExcerpts = false
     @Published public var analysis = AnalysisState()
     @Published public private(set) var goingForward = true
 
@@ -86,7 +85,6 @@ public final class OnboardingModel: ObservableObject {
     public var onOpenSettings: ((URL) -> Void)?
     public var onRequestPermission: ((String) -> Void)?
     public var onSelectModel: ((String) -> Void)?
-    public var onAllowExcerpts: ((Bool) -> Void)?
     public var onStartAnalysis: (() -> Void)?
     public var onStopAnalysis: (() -> Void)?
     public var onStepChanged: ((Step) -> Void)?
@@ -166,6 +164,4 @@ public final class OnboardingModel: ObservableObject {
         selectedModel = id
         onSelectModel?(id)
     }
-
-    public func setAllowCloudExcerpts(_ on: Bool) { allowCloudExcerpts = on; onAllowExcerpts?(on) }
 }

@@ -40,6 +40,9 @@ public final class Runtime: @unchecked Sendable {
     public let history: CycleHistory
     /// Why a configured model or embedder was replaced by the built-in one, if it was.
     public let fallbackNotes: [String]
+    /// Reading sources is one job at a time: a full cycle and live sync take turns, so a file that
+    /// changed during a cycle is not read and triaged by both at once.
+    private let ingestGate = AsyncMutex()
 
     /// `models` overrides the configured models; it exists so tests (and embedders of the library)
     /// can supply their own implementations.
@@ -60,7 +63,7 @@ public final class Runtime: @unchecked Sendable {
         // whole app down: fall back to the built-in one and say so.
         var notes: [String] = []
         func resolve(_ role: String, _ profile: ModelProfile, _ override: LanguageModel?) -> LanguageModel {
-            if let override { return override }
+            if let override { return override.redactingIfHosted() }
             do { return try Self.makeModel(profile) }
             catch { notes.append("\(role) model unavailable (\(error)); using the built-in model"); return AppleOnDeviceModel() }
         }
@@ -76,12 +79,18 @@ public final class Runtime: @unchecked Sendable {
         self.indexer = Indexer(store: store, embedder: embedder)
         self.history = CycleHistory(url: paths.support.appendingPathComponent("history.jsonl"))
         self.searcher = HybridSearcher(store: store, embedder: embedder)
-        self.memory = MemoryService(store: store, searcher: searcher, workspace: workspace, policy: cfg.egress)
+        self.memory = MemoryService(store: store, searcher: searcher, workspace: workspace)
     }
 
     // MARK: Factories
 
+    /// Hosted models come back wrapped in `RedactingModel`, so nothing sent to a provider skips
+    /// `PIIScan`; local models are returned as they are.
     public static func makeModel(_ p: ModelProfile) throws -> LanguageModel {
+        try buildModel(p).redactingIfHosted()
+    }
+
+    private static func buildModel(_ p: ModelProfile) throws -> LanguageModel {
         switch p.provider {
         case .apple: return AppleOnDeviceModel()
         case .openaiCompatible:
@@ -104,14 +113,21 @@ public final class Runtime: @unchecked Sendable {
         case .hashing: return HashingEmbedder()
         case .openaiCompatible:
             guard let base = p.baseURL.flatMap(URL.init(string:)), let model = p.model else { throw LLMError.unavailable("embedding profile needs baseURL and model") }
-            return OpenAICompatibleEmbedder(baseURL: base, model: model, apiKey: p.keyAccount.flatMap { Keychain.get(account: $0) })
+            let embedder = OpenAICompatibleEmbedder(baseURL: base, model: model, apiKey: p.keyAccount.flatMap { Keychain.get(account: $0) })
+            // A remote endpoint receives every chunk, note and search query: send it redacted text.
+            return base.isLoopbackHost ? embedder : RedactingEmbedder(embedder)
         }
     }
 
     // MARK: Sources
 
+    /// One connector per chosen folder.
+    public func folderConnectors() -> [FilesConnector] {
+        config.folders.map { FilesConnector(root: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)) }
+    }
+
     public func connectors() -> [Connector] {
-        var out: [Connector] = config.folders.map { FilesConnector(root: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)) }
+        var out: [Connector] = folderConnectors()
         if !config.imessageChats.isEmpty { out.append(IMessageConnector(selectedChatIDs: Set(config.imessageChats))) }
         if !config.whatsappChats.isEmpty { out.append(WhatsAppConnector(selectedChatIDs: Set(config.whatsappChats))) }
         if config.mailEnabled { out.append(MailConnector()) }
@@ -130,6 +146,33 @@ public final class Runtime: @unchecked Sendable {
     /// another editor, or an update may have run while the app was closed).
     public func refreshNotesIndex() async throws {
         try await VaultBuilder(store: store, model: knowledgeModel, embedder: embedder, workspace: workspace).syncIndex()
+    }
+
+    // MARK: Live sync
+
+    /// Brings the raw index (chunks, keyword and vector indexes) in line with what changed on
+    /// disk at `paths` (a folder path means everything beneath it): new and edited files are read and indexed, deleted ones are removed with
+    /// their chunks and vectors. It does not touch the knowledge base; notes are updated by the
+    /// next cycle, which finds the new items waiting.
+    @discardableResult
+    public func syncChanged(paths: [String]) async -> IngestReport {
+        var total = IngestReport()
+        // Only folders the user has already read once: the first read of a folder is a deliberate,
+        // visible step (onboarding or a cycle), never something that starts by itself.
+        let connectors = folderConnectors().filter { connector in
+            paths.contains { connector.scopedPath(for: $0) != nil } && ((try? store.hasBeenRead(bucket: connector.bucket)) ?? false)
+        }
+        if connectors.isEmpty { return total }
+        let pipeline = IngestPipeline(store: store, triager: Triager(model: triageModel), indexer: indexer)
+        await ingestGate.withLock {
+            for connector in connectors where !Task.isCancelled {
+                do { total.absorb(try await pipeline.sync(paths: paths, connector: connector)) }
+                catch { total.sourceErrors[connector.bucket] = "\(error)" }
+            }
+            // Anything whose embedding failed while indexing is retried here rather than waiting for the night.
+            _ = try? await indexer.embedPending()
+        }
+        return total
     }
 
     // MARK: The nightly cycle
@@ -156,16 +199,18 @@ public final class Runtime: @unchecked Sendable {
         emit(.reading, "Reading your sources")
         do {
             let pipeline = IngestPipeline(store: store, triager: Triager(model: triageModel), indexer: indexer)
-            report.ingest = try await pipeline.run(connectors: connectors, maxItemsPerSource: maxItemsPerSource) { p in
-                tracker.update { state in
-                    switch p.lastVerdict {
-                    case .survivor: state.kept += 1
-                    case .sensitive: state.sensitive += 1
-                    case .junk, .failed: state.skipped += 1
+            report.ingest = try await ingestGate.withLock {
+                try await pipeline.run(connectors: connectors, maxItemsPerSource: maxItemsPerSource) { p in
+                    tracker.update { state in
+                        switch p.lastVerdict {
+                        case .survivor: state.kept += 1
+                        case .sensitive: state.sensitive += 1
+                        case .junk, .failed: state.skipped += 1
+                        }
+                        state.stage = .reading; state.source = SourceNames.friendly(p.bucket)
+                        state.done = p.done; state.total = p.total; state.currentTitle = p.lastTitle
+                        state.message = "Reading \(state.source ?? "")"
                     }
-                    state.stage = .reading; state.source = SourceNames.friendly(p.bucket)
-                    state.done = p.done; state.total = p.total; state.currentTitle = p.lastTitle
-                    state.message = "Reading \(state.source ?? "")"
                 }
             }
             for (bucket, error) in report.ingest.sourceErrors { report.warnings.append("\(SourceNames.friendly(bucket)): \(error)") }

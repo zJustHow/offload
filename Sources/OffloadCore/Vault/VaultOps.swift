@@ -28,7 +28,7 @@ public struct VaultLimits: Sendable {
 
 public enum OpRejection: String, Sendable {
     case invalidPath, rootNote, tooDeep, tooManyNotes, tooManyFolders
-    case emptyContent, shrinksTooMuch, duplicateTitle, tooLong
+    case emptyContent, shrinksTooMuch, duplicateTitle, tooLong, redactedPlaceholder
 }
 
 /// Parsing, validation and application of model-proposed edits. Everything here is a pure
@@ -109,6 +109,9 @@ public enum VaultOps {
 
             var content = op.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if content.isEmpty { result.rejected.append((original, .emptyContent)); continue }
+            // A hosted model is shown redacted text; if it echoes a placeholder back (typically in a
+            // `rewrite` of a note holding an identifier) it would overwrite the user's own text.
+            if content.contains("[REDACTED:") { result.rejected.append((original, .redactedPlaceholder)); continue }
             let exists = notes[path] != nil
 
             // Be forgiving about the model's choice of verb when the intent is obvious.

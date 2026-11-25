@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
 
     var analysis = AnalysisState()
     private var cycleTask: Task<Void, Never>?
+    private var liveSync: LiveSync?
     private var runtimeIsStale = false
     private let editing = AtomicFlag()
     private let doubleTap = DoubleTapMonitor()
@@ -76,7 +77,27 @@ final class AppModel: ObservableObject {
             runtime = try Runtime(paths: paths, config: cfg)
             startupError = nil
             refreshCounts()
+            restartLiveSync()
         } catch { startupError = "\(error)"; AppLog.shared.error("could not start: \(error)") }
+    }
+
+    /// (Re)starts following the chosen folders, if the user turned that on. Always stops the old
+    /// watcher first: it holds the previous runtime, which is being replaced.
+    private func restartLiveSync() {
+        liveSync?.stop()
+        liveSync = nil
+        guard config.liveSync, let rt = runtime else { return }
+        if !rt.triageModel.capabilities.isLocal {
+            AppLog.shared.warning("live sync: triage uses a hosted model (\(rt.triageModel.name)), so files are sent to that provider as they change.")
+        }
+        let sync = LiveSync(runtime: rt) { [weak self] report in
+            Task { @MainActor in
+                AppLog.shared.info("live sync: \(report.survivors) kept, \(report.junk + report.sensitive) skipped, \(report.deleted) removed, \(report.failed) failed")
+                for (bucket, error) in report.sourceErrors { AppLog.shared.warning("live sync \(SourceNames.friendly(bucket)): \(error)") }
+                self?.refreshCounts()
+            }
+        }
+        if sync.start() { liveSync = sync } else { AppLog.shared.info("live sync is on, but there is no folder to watch yet") }
     }
 
     /// Changes the configuration, saves it, and rebuilds what depends on it (after a running cycle
@@ -94,6 +115,7 @@ final class AppModel: ObservableObject {
         runtimeIsStale = false
         do { runtime = try Runtime(paths: paths, config: config); startupError = nil } catch { startupError = "\(error)" }
         refreshCounts()
+        restartLiveSync()
     }
 
     func refreshCounts() {

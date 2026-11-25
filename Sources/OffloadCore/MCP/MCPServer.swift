@@ -3,13 +3,9 @@ import Foundation
 /// A Model Context Protocol server over stdio (newline-delimited JSON-RPC 2.0), exposing the
 /// knowledge base to MCP clients such as Claude Desktop and Claude Code. Runs locally, as a child
 /// process of the client: nothing is uploaded anywhere and there is no hosted relay.
-///
-/// The client is, by definition, a model outside this app's control, so every call is treated as a
-/// hosted audience: the egress policy decides whether raw-text snippets may be returned.
 public final class MCPServer: @unchecked Sendable {
     public static let serverName = "offload"
     public static let serverVersion = "0.1.0"
-    static let audience = ModelCapabilities(vision: false, contextChars: 200_000, isLocal: false)
     static let maxFilesPerCall = 50
     static let maxResponseChars = 256_000
 
@@ -59,7 +55,10 @@ public final class MCPServer: @unchecked Sendable {
             guard let name = params["name"] as? String else { return Self.error(id: id, code: -32602, message: "Missing tool name") }
             let args = params["arguments"] as? [String: Any] ?? [:]
             let (text, isError) = await callTool(name, args)
-            return Self.result(id: id, ["content": [["type": "text", "text": text]], "isError": isError])
+            // The client is a model outside this app's control. Chunks were redacted at ingestion,
+            // but notes (model-written or edited by the user) were not: everything returned passes
+            // through the same scan as text sent to a hosted model.
+            return Self.result(id: id, ["content": [["type": "text", "text": PIIScan.redact(text).text]], "isError": isError])
         default:
             if method.hasPrefix("notifications/") { return nil }
             return id.map { Self.error(id: $0, code: -32601, message: "Method not found: \(method)") } ?? nil
@@ -97,7 +96,7 @@ public final class MCPServer: @unchecked Sendable {
                 guard let q = args["query"] as? String, !q.trimmingCharacters(in: .whitespaces).isEmpty else { return ("query is required", true) }
                 var opts = SearchOptions()
                 opts.limit = min(10, max(1, (args["limit"] as? Int) ?? 5))
-                let hits = try await memory.search(q, options: opts, audience: Self.audience)
+                let hits = try await memory.search(q, options: opts)
                 return (MemoryService.render(hits), false)
             default:
                 return ("Unknown tool: \(name)", true)

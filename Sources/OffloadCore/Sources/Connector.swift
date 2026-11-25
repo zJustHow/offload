@@ -33,6 +33,19 @@ public protocol Connector: Sendable {
     func load(_ ref: WorkItemRef) async throws -> ItemContent
 }
 
+/// A connector that can re-read just part of its source, so a change on disk can be applied
+/// without walking everything again. Used by live sync (`FolderWatcher` -> `IngestPipeline.sync`).
+public protocol PathScopedConnector: Connector {
+    /// Maps a path reported by the file system to the form this connector uses for item keys, or
+    /// nil when the path is outside the source or is something a full listing would never include
+    /// (hidden, inside a skipped folder). Does no I/O, so it is cheap enough to filter event storms.
+    func scopedPath(for path: String) -> String?
+    /// What a full `list()` would return for `path` alone: the file itself, or every eligible file
+    /// beneath a folder. Empty when the path no longer exists. Throws when the whole source is
+    /// unreadable, which callers must not mistake for "everything was deleted".
+    func refs(under path: String) throws -> [WorkItemRef]
+}
+
 public enum ConnectorError: Error, CustomStringConvertible {
     case unreadable(String)
     case permissionDenied(String)

@@ -226,8 +226,7 @@ private struct PrivacyTab: View {
     var body: some View {
         Form {
             Section("Cloud models") {
-                Toggle("Let cloud models see excerpts from my files and messages", isOn: config(model, \.egress.rawSnippetsToHostedModels))
-                note("Off by default: a cloud model (a subscription or an API) then only sees your notes. Turning it on gives more accurate answers about exact details like booking codes and amounts, and sends those excerpts to the provider. Models on this Mac are never restricted.")
+                note("A cloud model (a subscription or an API) can read your notes and excerpts from your files and messages, with card numbers, ID numbers, passports and passwords already removed. Those excerpts are sent to the provider when they are used to answer, draft or act. Models on this Mac send nothing anywhere.")
             }
             Section("Where your data lives") {
                 row("Search index and settings", model.paths.support)
@@ -267,6 +266,10 @@ private struct ScheduleTab: View {
                     if installed { Button("Turn off") { remove() } }
                 }
                 Text(message.isEmpty ? (installed ? "Scheduled." : "Not scheduled.") : message).font(.callout).foregroundStyle(.secondary)
+            }
+            Section("While the app is open") {
+                Toggle("Keep search up to date as files change", isOn: config(model, \.liveSync))
+                note("New, edited, moved and deleted files are reflected in search within seconds, and changes made while the app was closed are caught up when it starts. Only folders you have already read in full are followed; a read you stopped halfway is not resumed on its own. Files are read and summarized with your triage model as they change, so a hosted triage model receives them as they change rather than once a night. Your notes are still updated by the nightly run.")
             }
             Section("Good to know") {
                 note("It reads what's new, updates your notes and prepares suggestions, while your Mac is awake and plugged in. A sleeping Mac is not woken: to also wake it each night, run this once in Terminal (it asks for your password):")

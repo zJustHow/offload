@@ -9,7 +9,7 @@ public struct Draft: Sendable {
 /// Drafts the reply the user would have written, for the conversation visible on screen.
 ///
 /// Instead of pasting the whole knowledge base into every request, the visible conversation is
-/// used as a search query: the hybrid retriever returns the few notes and — where policy allows —
+/// used as a search query: the hybrid retriever returns the few notes and
 /// the few raw excerpts that matter (the booking reference, the exact amount, what was agreed),
 /// so the draft can contain specifics a summary would have dropped, and the request stays small
 /// however large the knowledge base grows. The result is text only; sending is the user's job.
@@ -30,7 +30,7 @@ public final class ReplyDrafter: @unchecked Sendable {
         var opts = SearchOptions()
         opts.limit = 7
         opts.perItemCap = 1
-        let hits = visible.isEmpty ? [] : try await memory.search(String(visible.suffix(900)), options: opts, audience: model.capabilities)
+        let hits = visible.isEmpty ? [] : try await memory.search(String(visible.suffix(900)), options: opts)
         let notes = hits.filter { $0.kind == .note }.prefix(3)
         let excerpts = hits.filter { $0.kind == .chunk }.prefix(4)
 

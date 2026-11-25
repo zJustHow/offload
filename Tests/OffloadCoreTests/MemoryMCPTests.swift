@@ -6,8 +6,6 @@ final class MemoryMCPTests: XCTestCase {
     var ws: VaultWorkspace!
     var store: KnowledgeStore!
     var memory: MemoryService!
-    let local = ModelCapabilities(contextChars: 50_000, isLocal: true)
-    let hosted = ModelCapabilities(contextChars: 50_000, isLocal: false)
 
     override func setUp() async throws {
         base = FileManager.default.temporaryDirectory.appendingPathComponent("offload-mem-\(UUID().uuidString)")
@@ -34,27 +32,17 @@ final class MemoryMCPTests: XCTestCase {
     }
     override func tearDown() { try? FileManager.default.removeItem(at: base) }
 
-    func testEgressPolicyGatesRawSnippetsForHostedModelsOnly() async throws {
+    func testSearchReturnsRawSnippetsToEveryCaller() async throws {
         var opts = SearchOptions(); opts.limit = 10
-        let localHits = try await memory.search("LD-55821 deposit", options: opts, audience: local)
-        XCTAssertTrue(localHits.contains { $0.kind == .chunk }, "a local model may see raw text")
-
-        let hostedHits = try await memory.search("LD-55821 deposit", options: opts, audience: hosted)
-        XCTAssertFalse(hostedHits.contains { $0.kind == .chunk }, "raw snippets stay home by default")
-        XCTAssertTrue(hostedHits.allSatisfy { $0.kind == .note })
-
-        memory.policy.rawSnippetsToHostedModels = true
-        let allowed = try await memory.search("LD-55821 deposit", options: opts, audience: hosted)
-        XCTAssertTrue(allowed.contains { $0.kind == .chunk })
-        let chunk = try XCTUnwrap(allowed.first { $0.kind == .chunk })
+        let hits = try await memory.search("LD-55821 deposit", options: opts)
+        let chunk = try XCTUnwrap(hits.first { $0.kind == .chunk }, "raw snippets are always returned")
         XCTAssertEqual(chunk.citedByNotes, ["Home/Apartment.md"], "a hit knows which notes it supports")
     }
 
-    func testItemViewHidesRawTextFromHostedAudience() throws {
-        XCTAssertNil(try memory.item(id: "lease", audience: hosted)?.rawText)
-        XCTAssertTrue(try XCTUnwrap(memory.item(id: "lease", audience: local)?.rawText).contains("LD-55821"))
-        XCTAssertEqual(try memory.item(id: "lease", audience: hosted)?.citedByNotes, ["Home/Apartment.md"])
-        XCTAssertNil(try memory.item(id: "nope", audience: local))
+    func testItemViewAlwaysIncludesRawText() throws {
+        XCTAssertTrue(try XCTUnwrap(memory.item(id: "lease")?.rawText).contains("LD-55821"))
+        XCTAssertEqual(try memory.item(id: "lease")?.citedByNotes, ["Home/Apartment.md"])
+        XCTAssertNil(try memory.item(id: "nope"))
         XCTAssertTrue(try memory.isKnownSource(uri: "/docs/lease.md"))
         XCTAssertFalse(try memory.isKnownSource(uri: "/etc/passwd"))
     }
@@ -119,10 +107,7 @@ final class MemoryMCPTests: XCTestCase {
 
         let found = text(try await call(s, #"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_memory","arguments":{"query":"who is my landlord","limit":3}}}"#))
         XCTAssertTrue(found.contains("NOTE Home/Apartment.md"))
-        XCTAssertFalse(found.contains("SOURCE item="), "MCP clients are hosted: raw snippets are off by default")
-        XCTAssertFalse(found.contains("LD-55821"))
 
-        memory.policy.rawSnippetsToHostedModels = true
         let withRaw = text(try await call(s, #"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_memory","arguments":{"query":"LD-55821"}}}"#))
         XCTAssertTrue(withRaw.contains("SOURCE item=lease"))
 
@@ -130,6 +115,20 @@ final class MemoryMCPTests: XCTestCase {
         XCTAssertEqual((bad["result"] as? [String: Any])?["isError"] as? Bool, true)
         let empty = try await call(s, #"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"search_memory","arguments":{"query":"  "}}}"#)
         XCTAssertEqual((empty["result"] as? [String: Any])?["isError"] as? Bool, true)
+    }
+
+    func testToolResultsAreRedactedBeforeTheyReachTheClient() async throws {
+        // A note holding an identifier (written by the user, or slipped past the model) was never
+        // scanned at ingestion; the MCP client is a hosted model, so the server scans what it returns.
+        let dir = ws.root.appendingPathComponent("Home")
+        try "# Card\nThe user pays with card 4111 1111 1111 1111, reference LD-55821.\n"
+            .write(to: dir.appendingPathComponent("Card.md"), atomically: true, encoding: .utf8)
+        let s = MCPServer(memory: memory)
+        let files = text(try await call(s, ##"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_files","arguments":{"paths":["Home/Card.md"]}}}"##))
+        XCTAssertTrue(files.contains("=== Home/Card.md ==="))
+        XCTAssertFalse(files.contains("4111"), files)
+        XCTAssertTrue(files.contains("[REDACTED:card]"))
+        XCTAssertTrue(files.contains("LD-55821"), "ordinary references are not over-redacted")
     }
 
     func testFileCallsAreCapped() async throws {

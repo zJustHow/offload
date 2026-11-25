@@ -30,6 +30,23 @@ Each item is committed atomically (row + chunks in one transaction), one at a ti
 loses at most the item in flight. Model failures are stored as `failed` and retried next run; they are
 never remembered as "junk".
 
+**Live sync** (`LiveSync`, `FolderWatcher`; on by default, `liveSync` in the config) applies the same rules
+between cycles. FSEvents reports changed paths; each path is held until it has been quiet for a few seconds
+(per path, so a file that never stops changing cannot starve the rest); `IngestPipeline.sync` then reconciles
+just those paths through `PathScopedConnector.refs(under:)` — the same eligibility rules as a full listing, so
+a path yields exactly the keys a full scan would. A path that is gone deletes its items, chunks and vectors (a
+folder is reconciled as a whole), and an unreadable root is an error, not a deletion. When it starts it also
+**catches up**: it reconciles each folder once, so what changed while the app was closed or the Mac slept is
+applied at launch, not at the next nightly run. Only folders that have been **read in full on purpose** are
+followed (`KnowledgeStore.hasBeenRead`, one flag per source, set when a full read runs to the end; a read that
+was stopped, timed out or capped does not set it, so it is never silently resumed). The first read of a folder
+stays a visible step (onboarding or a cycle) and never starts by itself. Databases from before the flag
+existed are trusted once: what they already hold counts as read.
+It only updates the raw index; notes are still written by the cycle, which finds the new items waiting. A
+cycle and live sync take turns (`Runtime.ingestGate`). Events can still be lost, so the nightly cycle stays
+the authoritative full reconciliation. Item keys are real paths (symlinks resolved), which is what both a
+directory walk and FSEvents report.
+
 **Triage** is fail-closed: unparseable output, a missing `junk` boolean, an empty summary, or a summary
 containing an identifier all resolve to junk/sensitive, never to a survivor. For mail, chat and
 calendar the `sensitive` flag is mandatory.
@@ -101,8 +118,14 @@ How to read this honestly:
 
 ## 5. Consumers (`Agents/`, `MCP/`)
 
-* **`MemoryService`** is the single doorway for assistants and enforces the **egress policy** in one
-  place: hosted audiences get notes but not raw excerpts unless the user opted in.
+* **`MemoryService`** is the single doorway for assistants. It returns notes and raw excerpts to every
+  caller; there is no egress gate. Excerpts are protected by `PIIScan.redact` at ingestion.
+* **Egress redaction** (`Pipeline/EgressRedaction.swift`): `Runtime.makeModel` wraps every hosted model in
+  `RedactingModel` and `makeEmbedder` wraps remote endpoints in `RedactingEmbedder`; both run `PIIScan.redact`
+  over everything they send. `MCPServer` does the same to each tool result. This closes the paths that bypass
+  the index (triage input, notes, live screen text, queries). Local models are returned unwrapped, name and
+  capabilities are forwarded unchanged, and the pass is idempotent, so ingestion plus egress never double-redacts.
+  Not covered: images, and anything the regex set does not know.
 * **Reply drafter**: the visible conversation is the search query, so the prompt contains only the few
   relevant notes/excerpts (the request does not grow with the vault) and can include specifics a summary
   dropped. Output is text only; sending is the user's act.
@@ -161,12 +184,12 @@ the user's own login is used and no API key is involved.
   and friends are *removed from the child's environment*, otherwise the CLI bills that key instead of the subscription.
 * **Codex** (`codex exec`): read-only sandbox in an empty directory, final message read from `-o <file>`, screenshots
   passed with `-i`. Codex has no switch that removes its shell tool, so containment is the sandbox only.
-* Both count as **hosted** for the egress policy. If *triage* is pointed at one, the text of every item read is sent
+* Both count as **hosted** (`isLocal == false`). If *triage* is pointed at one, the text of every item read is sent
   to that provider; `config` and `cycle` warn about this.
 
 Verified: the Claude path against the real CLI (login status, a one-shot reply through the app's own code, and a
-full `ask` over the knowledge base: with the default policy the hosted model saw only notes and answered "not in the
-excerpts"; with raw excerpts enabled it returned the booking code and cited the file). **Not verified: Codex** — it is
+full `ask` over the knowledge base, checked before the raw-excerpt gate was removed: with the gate closed the hosted
+model saw only notes and answered "not in the excerpts"; with it open it returned the booking code and cited the file). **Not verified: Codex** — it is
 not installed where this was built. Its flags follow Codex's documented `exec` interface and the argument handling is
 tested against a stand-in executable, nothing more.
 
@@ -245,7 +268,7 @@ that counts the copies/fetches. The build is warning-free.
 | | |
 |---|---|
 | **Automated tests (173)** | everything in the first release, plus: the first-run state machine (every forward/back/blocked rule), graph construction and layout (determinism, bounds, folder clustering), dashboard and error wording, the log (rotation, permissions, deleted directory), a render check that every onboarding screen and Home draw real content and that a still is stable while a different phase is not, connector copy/fetch counts; gzip against the system `gzip`, protobuf extraction, Apple Notes and SiYuan fixtures (incl. older schema, locked/deleted notes, edits), the full Google OAuth flow against a real local listener (PKCE binding, forged state, denial, timeout), Gmail paging/cache/401-retry/parsing/pipeline, Google Calendar mapping, subscription CLIs against stand-in executables (args, env stripping, empty cwd, timeout, 3 MB of output), notch geometry/layout/state machine, gradient invariants, pixel-level glow checks |
-| **Run for real** | built-in on-device model; Apple embeddings; full `cycle → search → ask → draft → mcp`; **the real Claude subscription** (`ask` with and without raw excerpts); the app bundle launching with the notch shown, window level and frame confirmed from inside AppKit; a fresh install opening exactly one Welcome window and leaving no files, Keychain items or LaunchAgents outside its own folder; the icon, `.icns`, `Info.plist` and a verified DMG |
+| **Run for real** | built-in on-device model; Apple embeddings; full `cycle → search → ask → draft → mcp`; **the real Claude subscription** (`ask` with and without raw excerpts, before the gate was removed); the app bundle launching with the notch shown, window level and frame confirmed from inside AppKit; a fresh install opening exactly one Welcome window and leaving no files, Keychain items or LaunchAgents outside its own folder; the icon, `.icns`, `Info.plist` and a verified DMG |
 | **Not tested** | the notch's *live* appearance and animation on a screen (no screen-recording permission here); click-through and the ⌘⇧Space / click-on-notch triggers; the double-⌘ hotkey and paste; `MacComputerController`; real Gmail/Google Calendar (needs your own OAuth client); real Apple Notes / SiYuan / WhatsApp / iMessage databases (fixtures only) |
 | **Open question** | the window server reports an on-screen window at 0.9× scale, anchored at its bottom-centre. It does the same for a trivial solid-colour panel in a separate test program, and AppKit reports the intended frame, so it looks like a property of the environment this was built in rather than of the panel; it could not be confirmed on a real display. |
 | **Unverified formats** | WhatsApp schema, Apple Notes store layout, SiYuan `.sy` node layout: from documentation, not from real data |

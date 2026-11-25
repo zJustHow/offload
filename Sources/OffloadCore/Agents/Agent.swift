@@ -142,14 +142,13 @@ public final class Agent: @unchecked Sendable {
             case "search_memory":
                 guard let q = a.args["query"], !q.isEmpty else { return ("query is required", nil, true) }
                 var opts = SearchOptions(); opts.limit = min(10, max(1, int("limit") ?? 5))
-                return (MemoryService.render(try await memory.search(q, options: opts, audience: model.capabilities)), nil, false)
+                return (MemoryService.render(try await memory.search(q, options: opts)), nil, false)
             case "read_note":
                 guard let p = a.args["path"], let body = try memory.note(path: p) else { return ("note not found", nil, true) }
                 return (body, nil, false)
             case "read_item":
-                guard let id = a.args["id"], let item = try memory.item(id: id, audience: model.capabilities) else { return ("item not found", nil, true) }
-                var s = "\(item.title) (\(item.kind.rawValue)) \(item.uri)\nSummary: \(item.summary ?? "-")\n"
-                s += item.rawText.map { "Original text:\n\($0)" } ?? "(original text is not available to this model)"
+                guard let id = a.args["id"], let item = try memory.item(id: id) else { return ("item not found", nil, true) }
+                let s = "\(item.title) (\(item.kind.rawValue)) \(item.uri)\nSummary: \(item.summary ?? "-")\nOriginal text:\n\(item.rawText)"
                 return (s, nil, false)
             case "open_source":
                 if let e = needComputer() { return (e, nil, true) }
@@ -242,7 +241,7 @@ public final class Agent: @unchecked Sendable {
 
     func systemPrompt() -> String {
         var tools = """
-            - search_memory {"query": "...", "limit": 5}: search what is known about the user (notes, and where allowed, excerpts of their files and messages)
+            - search_memory {"query": "...", "limit": 5}: search what is known about the user (notes, and excerpts of their files and messages)
             - read_note {"path": "Folder/Note.md"}
             - read_item {"id": "..."}: the original text behind a search result, when available
             """

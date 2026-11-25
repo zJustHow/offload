@@ -242,17 +242,7 @@ private struct PrivacyScreen: View {
             VStack(spacing: 10) {
                 point("internaldrive", "Stays on this Mac", "Your notes, the search index and your settings live in folders on this Mac. Nothing is uploaded unless you choose a cloud model.")
                 point("eye.slash", "Sensitive things are dropped", "Medical, financial and other very private items are skipped, and card or ID numbers are removed before anything is stored.")
-                point("cloud", "If you picked a cloud model", "It can read your notes. By default it cannot read excerpts from your original files and messages.")
-                HStack(spacing: 14) {
-                    SymbolBadge("doc.text.magnifyingglass")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Let cloud models see excerpts too").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                        Text("More accurate answers (booking codes, exact amounts), at the cost of sending those excerpts to the provider.").font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    PillSwitch(isOn: Binding(get: { model.allowCloudExcerpts }, set: { model.setAllowCloudExcerpts($0) }), label: "Let cloud models see excerpts")
-                }
-                .padding(12).glassCard(cornerRadius: 14)
+                point("cloud", "If you picked a cloud model", "It can read your notes and excerpts from your original files and messages (card and ID numbers already removed), and those excerpts are sent to the provider when they are used.")
             }
             Spacer(minLength: 0)
         }

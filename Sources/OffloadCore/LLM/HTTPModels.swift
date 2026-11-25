@@ -10,14 +10,14 @@ public struct OpenAICompatibleModel: LanguageModel {
     let apiKey: String?
     let session: URLSession
 
-    /// `isLocal` should be true only for servers on this machine; it decides whether the egress
-    /// policy applies.
+    /// `isLocal` should be true only for servers on this machine; it marks the model as hosted
+    /// otherwise (which triggers the "triage sends every item to a provider" warning).
     public init(
         baseURL: URL, model: String, apiKey: String? = nil, vision: Bool = false,
         contextChars: Int = 60_000, isLocal: Bool? = nil, session: URLSession = .shared
     ) {
         self.baseURL = baseURL; self.model = model; self.apiKey = apiKey; self.session = session
-        let local = isLocal ?? (["localhost", "127.0.0.1", "::1"].contains(baseURL.host ?? ""))
+        let local = isLocal ?? baseURL.isLoopbackHost
         self.capabilities = ModelCapabilities(vision: vision, contextChars: contextChars, isLocal: local)
         self.name = "openai-compat:\(model)"
     }

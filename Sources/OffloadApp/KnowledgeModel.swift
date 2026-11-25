@@ -178,8 +178,7 @@ final class KnowledgeModel: ObservableObject {
         searching = true
         searchTask = Task { @MainActor in
             var opts = SearchOptions(); opts.limit = 20
-            // The person at the keyboard is the local user: raw excerpts are always shown to them.
-            let hits = (try? await rt.memory.search(q, options: opts, audience: ModelCapabilities(contextChars: 100_000, isLocal: true))) ?? []
+            let hits = (try? await rt.memory.search(q, options: opts)) ?? []
             guard !Task.isCancelled else { return }
             results = hits; searching = false
         }

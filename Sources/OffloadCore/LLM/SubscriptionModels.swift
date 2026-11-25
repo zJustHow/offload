@@ -7,7 +7,7 @@ import Foundation
 ///     tries to give the model instructions has nothing to act with,
 ///   * with no saved session, and with API-key variables removed from the environment so the
 ///     subscription — not a metered API key — is what gets used.
-/// Everything sent is processed by Anthropic, so this model counts as *hosted* for the egress policy.
+/// Everything sent is processed by Anthropic, so this model counts as *hosted* (`isLocal == false`).
 public struct ClaudeCLIModel: LanguageModel {
     public let name: String
     public let capabilities: ModelCapabilities

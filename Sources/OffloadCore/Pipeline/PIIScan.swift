@@ -28,6 +28,8 @@ public enum PIIScan {
         try! NSRegularExpression(pattern: pattern, options: options)
     }
 
+    // The label-prefixed rules skip the "account" / "passport" inside our own `[REDACTED:...]`
+    // placeholders, so scanning already-redacted text again never eats what follows a placeholder.
     private static let rules: [Rule] = [
         Rule(kind: .usSSN, regex: rx(#"\b(\d{3})[- ](\d{2})[- ](\d{4})\b"#), validate: { m in
             let d = m.filter(\.isNumber)
@@ -40,9 +42,9 @@ public enum PIIScan {
             return (13...19).contains(d.count) && luhn(d)
         }),
         Rule(kind: .chineseID, regex: rx(#"\b[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dX]\b"#), validate: { chineseIDChecksum($0) }),
-        Rule(kind: .passport, regex: rx(#"(?:passport|护照)[^\n]{0,24}?\b((?=[A-Z0-9]*\d)[A-Z0-9]{6,9})\b"#), validate: { _ in true }),
+        Rule(kind: .passport, regex: rx(#"(?<!REDACTED:)(?:passport|护照)[^\n]{0,24}?\b((?=[A-Z0-9]*\d)[A-Z0-9]{6,9})\b"#), validate: { _ in true }),
         Rule(kind: .secretKey, regex: rx(#"\b(?:sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,}|xox[abp]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,})\b"#, []), validate: { _ in true }),
-        Rule(kind: .bankAccount, regex: rx(#"(?:account|acct|iban|routing|银行卡|账号|账户)[^\n]{0,20}?(\d[\d -]{7,30}\d)"#), validate: { m in m.filter(\.isNumber).count >= 8 }),
+        Rule(kind: .bankAccount, regex: rx(#"(?<!REDACTED:)(?:account|acct|iban|routing|银行卡|账号|账户)[^\n]{0,20}?(\d[\d -]{7,30}\d)"#), validate: { m in m.filter(\.isNumber).count >= 8 }),
         Rule(kind: .password, regex: rx(#"(?:password|passwd|pwd|密码)\s*[:：=]\s*\S{4,}"#), validate: { _ in true }),
     ]
 

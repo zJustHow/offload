@@ -53,7 +53,7 @@ final class SubscriptionModelTests: XCTestCase {
         """)
         setenv("ANTHROPIC_API_KEY", "should-not-leak", 1); defer { unsetenv("ANTHROPIC_API_KEY") }
         let model = try ClaudeCLIModel(executable: fake, model: "haiku")
-        XCTAssertFalse(model.capabilities.isLocal, "a hosted model: the egress policy applies")
+        XCTAssertFalse(model.capabilities.isLocal, "a hosted model")
         let out = try await model.complete(CompletionRequest(messages: [.system("SYS"), .user("hello there")]))
         XCTAssertEqual(out, "echo: hello there", "the prompt travels on stdin, not in argv")
         let log = try String(contentsOfFile: argLog, encoding: .utf8)

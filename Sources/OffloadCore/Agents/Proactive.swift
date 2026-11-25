@@ -117,7 +117,7 @@ public final class ProactivePlanner: @unchecked Sendable {
 
     func prepare(_ c: Candidate, now: Date) async throws -> Card? {
         var opts = SearchOptions(); opts.limit = 6; opts.perItemCap = 1
-        let hits = try await memory.search(c.query + " " + c.title, options: opts, audience: model.capabilities)
+        let hits = try await memory.search(c.query + " " + c.title, options: opts)
         let evidence = MemoryService.render(hits, maxChars: max(1_500, model.capabilities.contextChars / 3))
         let system = """
             You prepare one suggestion for the user to review, using ONLY the evidence given. Decide a verdict: \

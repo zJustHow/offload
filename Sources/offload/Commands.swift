@@ -28,7 +28,6 @@ enum Commands {
         out("knowledge model : \(describe(cfg.knowledge))")
         out("assistant model : \(describe(cfg.assistant))")
         out("embeddings      : \(cfg.embedding.kind.rawValue)")
-        out("raw excerpts to hosted models: \(cfg.egress.rawSnippetsToHostedModels ? "ALLOWED" : "blocked (default)")")
         if cfg.knowledge.provider == .apple {
             out()
             out("NOTE: the knowledge base is written by the built-in on-device model. It is fine for reading")
@@ -119,10 +118,6 @@ enum Commands {
             default: fail("unknown embedding kind '\(kind)'")
             }
             out("Embedding changed. Existing vectors belong to the old embedder; run `offload reset --yes` and a new cycle to re-index.")
-        case "egress":
-            guard let v = a.flags["raw-to-hosted"], ["on", "off"].contains(v) else { fail("usage: config egress --raw-to-hosted <on|off>") }
-            cfg.egress.rawSnippetsToHostedModels = v == "on"
-            if v == "on" { err("Raw excerpts from your files and messages may now be sent to hosted models when they are used to answer, draft or act.") }
         case "vault":
             guard a.positional.count >= 2 else { fail("usage: config vault <path>") }
             cfg.vaultPath = a.positional[1]
@@ -235,6 +230,20 @@ enum Commands {
         for w in report.warnings { err("warning: \(w)") }
     }
 
+    /// Keeps the index following the chosen folders until interrupted (what the app does when
+    /// "Keep search up to date as files change" is on).
+    static func watch(_ a: Args) async throws {
+        let rt = try Runtime()
+        let quiet = a.flags["quiet-period"].flatMap(Double.init) ?? 5
+        let sync = LiveSync(runtime: rt, quietPeriod: quiet) { r in
+            out("synced: \(r.survivors) kept, \(r.junk) junk, \(r.sensitive) sensitive, \(r.failed) failed, \(r.deleted) removed")
+            for (bucket, error) in r.sourceErrors { err("warning: \(bucket): \(error)") }
+        }
+        guard sync.start() else { fail("no folder to watch. Add one with: offload sources add-folder <path>") }
+        out("Watching \(rt.folderConnectors().map(\.root.path).joined(separator: ", ")). Changes are applied after \(Int(quiet))s of quiet. Ctrl-C to stop.")
+        while true { try await Task.sleep(nanoseconds: 3_600 * 1_000_000_000) }
+    }
+
     static func search(_ a: Args) async throws {
         let q = a.positional.joined(separator: " ")
         guard !q.isEmpty else { fail("usage: search <query> [--mode hybrid|lexical|exact|vector] [--limit N] [--notes-only]") }
@@ -249,8 +258,7 @@ enum Commands {
         default: fail("--mode must be hybrid, lexical, exact or vector")
         }
         if a.has("notes-only") { opts.include = [.note] }
-        // A person at the terminal is the local user, so raw excerpts are always allowed here.
-        let hits = try await rt.memory.search(q, options: opts, audience: ModelCapabilities(contextChars: 100_000, isLocal: true))
+        let hits = try await rt.memory.search(q, options: opts)
         if hits.isEmpty { out("(no results)"); return }
         for (n, h) in hits.enumerated() {
             let sig = h.signals
@@ -346,7 +354,6 @@ enum Commands {
 
     static func mcp(_ a: Args) async throws {
         let rt = try Runtime()
-        if a.has("allow-raw") { rt.memory.policy.rawSnippetsToHostedModels = true; err("offload mcp: raw excerpts ENABLED for this session") }
         err("offload mcp: serving the knowledge base at \(rt.workspace.root.path) on stdio")
         await MCPServer(memory: rt.memory).runStdio()
     }

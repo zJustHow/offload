@@ -24,6 +24,12 @@ public final class KnowledgeStore: @unchecked Sendable {
             try db.run("INSERT INTO meta(key,value) VALUES('tokenizer.bigrams', ?)", [.text(t.includeCJKBigrams ? "1" : "0")])
             self.tokenizer = t
         }
+        // Databases from before read markers existed: whatever they already hold counts as read,
+        // once. After that a source is read only when a full read of it says so.
+        if try db.scalarText("SELECT value FROM meta WHERE key='migrate.read-markers'") == nil {
+            try db.run("INSERT OR IGNORE INTO meta(key,value) SELECT 'read.' || bucket, '1' FROM items GROUP BY bucket")
+            try db.run("INSERT INTO meta(key,value) VALUES('migrate.read-markers', '1')")
+        }
     }
 
     public convenience init(path: String) throws { try self.init(db: Database(path: path)) }
@@ -38,6 +44,14 @@ public final class KnowledgeStore: @unchecked Sendable {
 
     public func items(bucket: String) throws -> [ItemRecord] {
         try db.query(Self.itemSelect + " WHERE bucket = ?", [.text(bucket)], Self.readItem)
+    }
+
+    /// Items of a bucket whose `uri` is `path` itself or lies beneath it (`path/...`).
+    public func items(bucket: String, under path: String) throws -> [ItemRecord] {
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        return try db.query(
+            Self.itemSelect + " WHERE bucket = ? AND (uri = ? OR substr(uri, 1, ?) = ?)",
+            [.text(bucket), .text(path), .int(prefix.unicodeScalars.count), .text(prefix)], Self.readItem)
     }
 
     /// Inserts or replaces the row; chunks of a replaced item are kept until `replaceChunks`.
@@ -68,6 +82,18 @@ public final class KnowledgeStore: @unchecked Sendable {
     public func deleteItem(id: String) throws {
         try db.run("DELETE FROM items WHERE id = ?", [.text(id)])
         bumpGeneration()
+    }
+
+    /// Records that a full read of this source ran to the end. Live sync only follows sources the
+    /// user has read in full on purpose; this is the one flag it goes by.
+    public func markRead(bucket: String) throws {
+        try db.run("INSERT OR REPLACE INTO meta(key,value) VALUES(?, '1')", [.text("read." + bucket)])
+    }
+
+    /// True once a full read of the source has run to the end. A read that was stopped, ran out of
+    /// time or was capped does not count, however much of the source it already stored.
+    public func hasBeenRead(bucket: String) throws -> Bool {
+        try db.scalarText("SELECT value FROM meta WHERE key = ?", [.text("read." + bucket)]) != nil
     }
 
     /// True when this exact content has already been processed (any verdict except `failed`).
