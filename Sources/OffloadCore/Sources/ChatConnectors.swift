@@ -50,6 +50,38 @@ enum DatabaseSnapshot {
     /// that a run copies each source once, not once per item).
     static var openCount: Int { counter.lock(); defer { counter.unlock() }; return opened }
 
+    /// What a failed copy means for the person using the app.
+    enum CopyFailure: Equatable {
+        /// The file is not there (the app that owns it is not installed, or never ran).
+        case missing
+        /// The system refused: for these databases that is almost always Full Disk Access.
+        case denied
+        /// Anything else (disk full, I/O error): not something a permission switch fixes.
+        case other
+    }
+
+    /// Tells the cases apart by the error itself, not by looking at the path first: a file inside a
+    /// protected folder can look absent to a process that is not allowed to see it, and that must
+    /// still be reported as a permission problem. A refused read surfaces as Cocoa 513 over POSIX
+    /// EPERM, an absent file as Cocoa 260 over POSIX ENOENT (checked on macOS 27).
+    static func classify(_ error: Error) -> CopyFailure {
+        var chain: [NSError] = []
+        var next: NSError? = error as NSError
+        while let e = next, chain.count < 4 { chain.append(e); next = e.userInfo[NSUnderlyingErrorKey] as? NSError }
+        for e in chain where e.domain == NSPOSIXErrorDomain {
+            if e.code == Int(ENOENT) { return .missing }
+            if e.code == Int(EPERM) || e.code == Int(EACCES) { return .denied }
+        }
+        for e in chain where e.domain == NSCocoaErrorDomain {
+            switch e.code {
+            case NSFileNoSuchFileError, NSFileReadNoSuchFileError: return .missing
+            case NSFileReadNoPermissionError, NSFileWriteNoPermissionError: return .denied
+            default: continue
+            }
+        }
+        return .other
+    }
+
     static func open(_ url: URL) throws -> (db: Database, cleanup: () -> Void) {
         counter.lock(); opened += 1; counter.unlock()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("offload-snap-\(UUID().uuidString)")
@@ -57,7 +89,14 @@ enum DatabaseSnapshot {
         let copy = dir.appendingPathComponent(url.lastPathComponent)
         do { try FileManager.default.copyItem(at: url, to: copy) } catch {
             try? FileManager.default.removeItem(at: dir)
-            throw ConnectorError.permissionDenied("cannot read \(url.lastPathComponent) (Full Disk Access needed?): \(error.localizedDescription)")
+            switch classify(error) {
+            case .missing:
+                throw ConnectorError.unreadable("\(url.lastPathComponent) not found at \(url.path); is the app installed and has it been opened on this Mac?")
+            case .denied:
+                throw ConnectorError.permissionDenied("cannot read \(url.lastPathComponent) (Full Disk Access needed?): \(error.localizedDescription)")
+            case .other:
+                throw ConnectorError.unreadable("cannot read \(url.lastPathComponent): \(error.localizedDescription)")
+            }
         }
         for suffix in ["-wal", "-shm"] {
             let side = URL(fileURLWithPath: url.path + suffix)

@@ -210,9 +210,73 @@ final class ConnectorTests: XCTestCase {
         let before = try Data(contentsOf: url)
         _ = try IMessageConnector.listChats(databaseURL: url)
         XCTAssertEqual(try Data(contentsOf: url), before)
-        XCTAssertThrowsError(try IMessageConnector.listChats(databaseURL: tmp.appendingPathComponent("missing.db"))) { error in
-            XCTAssertTrue("\(error)".contains("Full Disk Access"))
+    }
+
+    // MARK: A source database that cannot be copied
+
+    /// The connector error a body throws, or nil when it does not throw one.
+    private func connectorError(_ body: () async throws -> Void) async -> ConnectorError? {
+        do { try await body() } catch { return error as? ConnectorError }
+        return nil
+    }
+
+    /// Regression: a database that is simply not there (WhatsApp or Messages never used on this Mac)
+    /// was reported as "permission denied (Full Disk Access needed?)", which sends people to a switch
+    /// that cannot help. It is an unreadable source, and the message says the file is not found.
+    func testAMissingDatabaseIsNotReportedAsAPermissionProblem() async throws {
+        let missing = tmp.appendingPathComponent("absent/ChatStorage.sqlite")
+        let cases: [(String, () async throws -> Void)] = [
+            ("iMessage list", { _ = try await IMessageConnector(databaseURL: missing, selectedChatIDs: ["a"]).list() }),
+            ("iMessage chat picker", { _ = try IMessageConnector.listChats(databaseURL: missing) }),
+            ("WhatsApp list", { _ = try await WhatsAppConnector(databaseURL: missing, selectedChatIDs: ["a"]).list() }),
+            ("WhatsApp chat picker", { _ = try WhatsAppConnector.listChats(databaseURL: missing) }),
+            ("Apple Notes list", { _ = try await AppleNotesConnector(databaseURL: missing).list() }),
+        ]
+        for (label, body) in cases {
+            guard case .unreadable(let message)? = await connectorError(body) else { XCTFail("\(label): expected .unreadable"); continue }
+            XCTAssertTrue(message.contains("not found"), "\(label): \(message)")
+            XCTAssertTrue(message.contains(missing.path), "\(label) should name the place it looked: \(message)")
+            XCTAssertFalse(message.contains("Full Disk Access"), "\(label) must not blame a permission: \(message)")
         }
+    }
+
+    /// The case the old message was written for must keep working: a file that exists but may not be read.
+    func testARefusedReadIsStillReportedAsFullDiskAccess() async throws {
+        try XCTSkipIf(getuid() == 0, "root can read a file that has no permissions")
+        let url = try makeIMessageDB()
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+        let bodies: [(String, () async throws -> Void)] = [
+            ("list", { _ = try await IMessageConnector(databaseURL: url, selectedChatIDs: ["a"]).list() }),
+            ("chat picker", { _ = try IMessageConnector.listChats(databaseURL: url) }),
+        ]
+        for (label, body) in bodies {
+            guard case .permissionDenied(let message)? = await connectorError(body) else { XCTFail("\(label): expected .permissionDenied"); continue }
+            XCTAssertTrue(message.contains("Full Disk Access"), "\(label): \(message)")
+        }
+    }
+
+    func testCopyFailuresAreClassifiedByTheirCause() {
+        func posix(_ code: Int32) -> NSError { NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
+        func cocoa(_ code: Int, under: NSError? = nil) -> NSError {
+            NSError(domain: NSCocoaErrorDomain, code: code, userInfo: under.map { [NSUnderlyingErrorKey: $0] } ?? [:])
+        }
+        let classify = DatabaseSnapshot.classify
+        // What macOS actually reports (probed on macOS 27): an absent file, and a read the system refused.
+        XCTAssertEqual(classify(cocoa(NSFileReadNoSuchFileError, under: posix(ENOENT))), .missing)
+        XCTAssertEqual(classify(cocoa(NSFileWriteNoPermissionError, under: posix(EPERM))), .denied)
+        // Either layer alone is enough.
+        XCTAssertEqual(classify(posix(ENOENT)), .missing)
+        XCTAssertEqual(classify(cocoa(NSFileNoSuchFileError)), .missing)
+        XCTAssertEqual(classify(posix(EACCES)), .denied)
+        XCTAssertEqual(classify(cocoa(NSFileReadNoPermissionError)), .denied)
+        // The underlying cause wins over a generic Cocoa wrapper.
+        XCTAssertEqual(classify(cocoa(NSFileWriteUnknownError, under: posix(EPERM))), .denied)
+        XCTAssertEqual(classify(cocoa(NSFileWriteUnknownError, under: posix(ENOENT))), .missing)
+        // Not a permission problem and not a missing file: no switch in System Settings fixes these.
+        XCTAssertEqual(classify(cocoa(NSFileWriteOutOfSpaceError, under: posix(ENOSPC))), .other)
+        XCTAssertEqual(classify(posix(EIO)), .other)
+        XCTAssertEqual(classify(NSError(domain: "somewhere.else", code: 1)), .other)
     }
 
     // MARK: WhatsApp (fixture follows the documented Core Data schema)
