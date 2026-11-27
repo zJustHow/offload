@@ -38,18 +38,23 @@ public final class MacComputerController: ComputerController, @unchecked Sendabl
     private var origin: CGPoint = .zero
     private let longEdge: CGFloat = 1568
 
-    public init() {}
+    private let excludesOwnWindows: Bool
+
+    /// `excludingOwnWindows`: leave this app's windows (the notch, its glow) out of screenshots, so
+    /// that what is read is the user's content and not the assistant's own status text.
+    public init(excludingOwnWindows: Bool = false) { self.excludesOwnWindows = excludingOwnWindows }
 
     public func screenshot() async throws -> Data {
         guard ComputerPermissions.screenRecording else { throw ComputerError.permission("Screen Recording") }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else { throw ComputerError.noDisplay }
+        let own = excludesOwnWindows ? content.windows.filter { $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier } : []
         let k = min(1, longEdge / CGFloat(max(display.width, display.height)))
         let config = SCStreamConfiguration()
         config.width = Int(CGFloat(display.width) * k)
         config.height = Int(CGFloat(display.height) * k)
         config.showsCursor = true
-        let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: config)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display: display, excludingWindows: own), configuration: config)
         setGeometry(scale: 1 / k, origin: display.frame.origin)
 
         let data = NSMutableData()

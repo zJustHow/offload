@@ -3,15 +3,37 @@ import Foundation
 /// A Model Context Protocol server over stdio (newline-delimited JSON-RPC 2.0), exposing the
 /// knowledge base to MCP clients such as Claude Desktop and Claude Code. Runs locally, as a child
 /// process of the client: nothing is uploaded anywhere and there is no hosted relay.
+///
+/// It offers four read-only tools and the notes themselves as resources. Every tool call goes
+/// through the same `ToolDispatcher` as the assistant's own calls, under a read-only policy, so a
+/// client can never reach a tool that changes anything, and everything returned is redacted (the
+/// client is a model this app does not control).
 public final class MCPServer: @unchecked Sendable {
     public static let serverName = "offload"
-    public static let serverVersion = "0.1.0"
-    static let maxFilesPerCall = 50
-    static let maxResponseChars = 256_000
+    public static let serverVersion = "0.2.0"
+    static let maxFilesPerCall = MemoryTools.maxFilesPerCall
+    static let maxResponseChars = MemoryTools.maxResponseChars
+    static let maxListedResources = 1_000
+    static let noteURIPrefix = "offload://note/"
+    /// What this server offers; a test keeps it equal to the registry, because the Claude command-line
+    /// model allows exactly these (and nothing else) when it is wired to this server.
+    public static let toolNames = ["get_structure", "get_files", "search_memory", "read_item"]
 
     private let memory: MemoryService
+    let registry: ToolRegistry
+    private let dispatcher: ToolDispatcher
 
-    public init(memory: MemoryService) { self.memory = memory }
+    public init(memory: MemoryService, observer: (@Sendable (ToolEvent) -> Void)? = nil) {
+        self.memory = memory
+        let registry = ToolRegistry([
+            MemoryTools.getStructure(memory), MemoryTools.getFiles(memory),
+            MemoryTools.searchMemory(memory), MemoryTools.readItem(memory),
+        ])
+        self.registry = registry
+        // Chunks were redacted at ingestion, but notes (model-written or edited by the user) were
+        // not: everything returned passes through the same scan as text sent to a hosted model.
+        self.dispatcher = ToolDispatcher(registry: registry, policy: .readOnly, hooks: [OutputRedactionHook()], observer: observer)
+    }
 
     // MARK: - Transport
 
@@ -42,23 +64,33 @@ public final class MCPServer: @unchecked Sendable {
             let version = params["protocolVersion"] as? String ?? "2025-03-26"
             return Self.result(id: id, [
                 "protocolVersion": version,
-                "capabilities": ["tools": ["listChanged": false]],
+                "capabilities": ["tools": ["listChanged": false], "resources": ["subscribe": false, "listChanged": false]],
                 "serverInfo": ["name": Self.serverName, "version": Self.serverVersion],
-                "instructions": "A personal knowledge base about the user. Call get_structure first (the folder and file names are the index and the README is a portrait of the user), then get_files for specific notes, or search_memory to find things by meaning or exact term.",
+                "instructions": "A personal knowledge base about the user. Call get_structure first (the folder and file names are the index and the README is a portrait of the user), then get_files for specific notes, or search_memory to find things by meaning or exact term. read_item returns the original text behind a search result. The notes are also available as resources.",
             ])
         case "ping":
             return id.map { Self.result(id: $0, [:]) } ?? nil
         case "tools/list":
-            return id.map { Self.result(id: $0, ["tools": Self.tools]) } ?? nil
+            return id.map { Self.result(id: $0, ["tools": Self.toolList(registry.specs)]) } ?? nil
         case "tools/call":
             guard let id else { return nil }
             guard let name = params["name"] as? String else { return Self.error(id: id, code: -32602, message: "Missing tool name") }
-            let args = params["arguments"] as? [String: Any] ?? [:]
-            let (text, isError) = await callTool(name, args)
-            // The client is a model outside this app's control. Chunks were redacted at ingestion,
-            // but notes (model-written or edited by the user) were not: everything returned passes
-            // through the same scan as text sent to a hosted model.
-            return Self.result(id: id, ["content": [["type": "text", "text": PIIScan.redact(text).text]], "isError": isError])
+            let args = JSONValue(any: params["arguments"] as? [String: Any] ?? [:]).asObject ?? [:]
+            let result = await dispatcher.dispatch(ToolCall(name: name, arguments: args))
+            return Self.result(id: id, ["content": [["type": "text", "text": result.output.text]], "isError": result.output.isError])
+        case "resources/list":
+            guard let id else { return nil }
+            do { return Self.result(id: id, ["resources": try noteResources()]) }
+            catch { return Self.error(id: id, code: -32603, message: "Could not list notes: \(error)") }
+        case "resources/templates/list":
+            return id.map { Self.result(id: $0, ["resourceTemplates": [[String: Any]]()]) } ?? nil
+        case "resources/read":
+            guard let id else { return nil }
+            guard let uri = params["uri"] as? String else { return Self.error(id: id, code: -32602, message: "Missing uri") }
+            do {
+                guard let text = try readNote(uri: uri) else { return Self.error(id: id, code: -32002, message: "Resource not found: \(uri)") }
+                return Self.result(id: id, ["contents": [["uri": uri, "mimeType": "text/markdown", "text": PIIScan.redact(text).text]]])
+            } catch { return Self.error(id: id, code: -32603, message: "Could not read the note: \(error)") }
         default:
             if method.hasPrefix("notifications/") { return nil }
             return id.map { Self.error(id: $0, code: -32601, message: "Method not found: \(method)") } ?? nil
@@ -67,88 +99,40 @@ public final class MCPServer: @unchecked Sendable {
 
     // MARK: - Tools
 
-    static let tools: [[String: Any]] = [
-        [
-            "name": "get_structure",
-            "description": "Get the user's personal knowledge base: the folder tree plus the README portrait of who they are. Call this first whenever personal context would help (who the user is, their projects, people, plans, preferences).",
-            "inputSchema": ["type": "object", "properties": [String: Any](), "additionalProperties": false],
-        ],
-        [
-            "name": "get_files",
-            "description": "Fetch notes by vault-relative path exactly as shown by get_structure, e.g. [\"README.md\", \"Work/Acme.md\"]. At most 50 per call; fetch only what you need.",
-            "inputSchema": ["type": "object", "properties": ["paths": ["type": "array", "items": ["type": "string"]]], "required": ["paths"]],
-        ],
-        [
-            "name": "search_memory",
-            "description": "Search the knowledge base by meaning and by exact terms (names, ids, amounts). Returns the best-matching notes. Use this when you do not know which note holds an answer.",
-            "inputSchema": ["type": "object", "properties": ["query": ["type": "string"], "limit": ["type": "integer", "minimum": 1, "maximum": 10]], "required": ["query"]],
-        ],
-    ]
-
-    func callTool(_ name: String, _ args: [String: Any]) async -> (String, Bool) {
-        do {
-            switch name {
-            case "get_structure":
-                return (try memory.structure(), false)
-            case "get_files":
-                return (try files(args["paths"]), false)
-            case "search_memory":
-                guard let q = args["query"] as? String, !q.trimmingCharacters(in: .whitespaces).isEmpty else { return ("query is required", true) }
-                var opts = SearchOptions()
-                opts.limit = min(10, max(1, (args["limit"] as? Int) ?? 5))
-                let hits = try await memory.search(q, options: opts)
-                return (MemoryService.render(hits), false)
-            default:
-                return ("Unknown tool: \(name)", true)
-            }
-        } catch {
-            return ("Error: \(error)", true)
+    static func toolList(_ specs: [ToolSpec]) -> [[String: Any]] {
+        specs.map { spec in
+            [
+                "name": spec.name,
+                "description": spec.description,
+                "inputSchema": spec.inputSchema.anyValue,
+                "annotations": ["readOnlyHint": spec.tier == .readOnly, "destructiveHint": false, "openWorldHint": false],
+            ]
         }
     }
 
-    private func files(_ raw: Any?) throws -> String {
-        var paths: [String] = []
-        if let list = raw as? [String] { paths = list }
-        else if let s = raw as? String {
-            // Models sometimes send a JSON array as a string, or a comma-joined string.
-            if let data = s.data(using: .utf8), let arr = try? JSONSerialization.jsonObject(with: data) as? [String] { paths = arr }
-            else { paths = [s] }
-        }
-        paths = paths.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        guard !paths.isEmpty else { return "(no paths given)" }
+    static func suggestions(for query: String, in paths: [String]) -> [String] { MemoryTools.suggestions(for: query, in: paths) }
 
-        var notices: [String] = []
-        if paths.count > Self.maxFilesPerCall {
-            notices.append("(only the first \(Self.maxFilesPerCall) of \(paths.count) paths were fetched; call again for the rest)")
-            paths = Array(paths.prefix(Self.maxFilesPerCall))
+    // MARK: - Resources
+
+    private func noteResources() throws -> [[String: Any]] {
+        let notes = try memory.workspace.readAll()
+        return notes.keys.sorted().prefix(Self.maxListedResources).map { path in
+            [
+                "uri": Self.noteURI(path),
+                "name": path,
+                "title": VaultOps.title(of: notes[path] ?? "", path: path),
+                "mimeType": "text/markdown",
+            ]
         }
-        let all = try memory.workspace.readAll()
-        var chunks: [String] = []
-        var size = 0
-        for p in paths {
-            let text: String
-            if let found = memory.resolveNote(p, in: all) { text = "=== \(found.path) ===\n\(found.body)" }
-            else {
-                let guesses = Self.suggestions(for: p, in: Array(all.keys))
-                text = "=== \(p) ===\n(not found)" + (guesses.isEmpty ? "" : " Did you mean: " + guesses.joined(separator: ", ") + "?")
-            }
-            if size + text.count > Self.maxResponseChars {
-                notices.append("(response truncated at the size cap; call get_files again with fewer paths)")
-                break
-            }
-            size += text.count
-            chunks.append(text)
-        }
-        return (chunks + notices).joined(separator: "\n\n")
     }
 
-    static func suggestions(for query: String, in paths: [String]) -> [String] {
-        let q = ((query as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
-        guard !q.isEmpty else { return [] }
-        return paths.filter { p in
-            let stem = ((p as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
-            return stem.contains(q) || q.contains(stem)
-        }.sorted().prefix(3).map { $0 }
+    private func readNote(uri: String) throws -> String? {
+        guard uri.hasPrefix(Self.noteURIPrefix), let path = String(uri.dropFirst(Self.noteURIPrefix.count)).removingPercentEncoding else { return nil }
+        return try memory.note(path: path)
+    }
+
+    static func noteURI(_ path: String) -> String {
+        noteURIPrefix + (path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path)
     }
 
     // MARK: - JSON-RPC helpers

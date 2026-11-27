@@ -1,15 +1,15 @@
 import SwiftUI
 
-/// The visual language shared by every surface: the colors of Apple's "intelligence" glow and the
-/// motion curves Apple's own pages use.
+/// The visual language shared by every surface: a black, white and gray "light" palette and the
+/// motion curves Apple's own pages use. There is deliberately no hue anywhere in the app.
 ///
 /// Provenance, stated plainly. The *easing curves* below are read from the CSS of
 /// apple.com/apple-intelligence (`cubic-bezier(0.66,0,0.1,1)`, `(0.165,0.84,0.44,1)`,
 /// `(0.28,0.11,0.32,1)`), as is the white "rim light" conic gradient used on glass edges. The
-/// *glow colors* are NOT in that CSS (the glow is video there); they are the seven values widely used
-/// in community re-creations of the Apple Intelligence glow, so treat them as an approximation.
+/// grays are our own choice (the app is monochrome, in the manner of Apple's new Siri), seven
+/// values of different brightness so the glow and orb still have light and shade to drift through.
 public enum IntelligenceStyle {
-    public static let hexes: [UInt32] = [0xBC82F3, 0xF5B9EA, 0x8D99FF, 0xAA6EEE, 0xFF6778, 0xFFBA71, 0xC686FF]
+    public static let hexes: [UInt32] = [0xFFFFFF, 0xCFCFCF, 0xEDEDED, 0xA6A6A6, 0xF6F6F6, 0xBDBDBD, 0xDDDDDD]
     public static let colors: [Color] = hexes.map { Color(hex: $0) }
 
     /// Expressive ease in/out: surfaces growing out of the notch.

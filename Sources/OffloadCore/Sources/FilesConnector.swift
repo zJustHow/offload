@@ -3,9 +3,10 @@ import PDFKit
 
 /// Reads documents, notes and images from folders the user chose.
 ///
-/// Text, Markdown and HTML are read directly, PDFs through PDFKit, and images through Vision's
-/// text recognition (the built-in on-device language model is text-only, so a screenshot becomes
-/// its recognized text; an image with no readable text is not worth keeping).
+/// Text, Markdown and HTML are read directly, PDFs through PDFKit, Word and PowerPoint files
+/// (`.docx`, `.pptx`) through `OfficeText`, and images through Vision's text recognition (the
+/// built-in on-device language model is text-only, so a screenshot becomes its recognized text; an
+/// image with no readable text is not worth keeping).
 public struct FilesConnector: Connector {
     public let root: URL
     public let kind: SourceKind = .file
@@ -15,7 +16,7 @@ public struct FilesConnector: Connector {
     public var maxTextChars = 200_000
 
     static let authoredExtensions: Set<String> = ["md", "markdown", "txt", "org", "text"]
-    static let savedTextExtensions: Set<String> = ["html", "htm", "pdf", "csv", "json"]
+    static let savedTextExtensions: Set<String> = ["html", "htm", "pdf", "docx", "pptx", "csv", "json"]
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "tiff", "gif", "webp"]
     static let skippedDirectories: Set<String> = ["node_modules", ".git", "Library", "build", "DerivedData", ".build", "__pycache__", "venv", ".venv"]
 
@@ -144,6 +145,10 @@ extension FilesConnector {
         } else if ext == "pdf" {
             guard let doc = PDFDocument(url: url) else { throw ConnectorError.unreadable("not a readable PDF") }
             text = doc.string ?? ""
+        } else if ext == "docx" {
+            text = try OfficeText.docx(at: url, maxChars: maxTextChars)
+        } else if ext == "pptx" {
+            text = try OfficeText.pptx(at: url, maxChars: maxTextChars)
         } else if ext == "html" || ext == "htm" {
             text = HTMLText.strip(try Self.readString(url))
         } else {

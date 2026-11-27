@@ -39,7 +39,7 @@ public enum Dashboard {
 
     /// What an agent step looks like to a person.
     public static func stepDescription(_ a: AgentAction) -> String {
-        func arg(_ k: String) -> String { a.args[k] ?? "" }
+        func arg(_ k: String) -> String { a.args.string(k) ?? "" }
         switch a.tool {
         case "search_memory": return "Searching your memory for “\(arg("query"))”"
         case "read_note": return "Reading \(arg("path"))"
@@ -52,6 +52,13 @@ public enum Dashboard {
         case "open_app": return "Opening \(arg("name"))"
         case "open_url": return "Opening a web page"
         case "ask_user": return "Asking you a question"
+        case "web_fetch": return "Reading a web page"
+        case "web_search": return "Searching the web for “\(arg("query"))”"
+        case "propose_note_edit": return "Proposing a change to \(arg("path"))"
+        case "todo_write": return "Updating its checklist"
+        case "exit_plan_mode": return "Showing you its plan"
+        case "tool_search": return "Looking for a tool"
+        case "list_mcp_resources", "read_mcp_resource": return "Reading from a connected app"
         default: return a.thought.isEmpty ? a.tool : String(a.thought.prefix(60))
         }
     }

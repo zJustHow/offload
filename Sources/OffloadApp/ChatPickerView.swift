@@ -1,4 +1,5 @@
 import OffloadCore
+import OffloadUI
 import SwiftUI
 
 /// Chooses which conversations may be read. Nothing from a chat that is not ticked here is ever read.
@@ -11,38 +12,53 @@ struct ChatPickerView: View {
     @State private var filter = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Choose chats").font(.title3.weight(.semibold))
-            Text("I only read the conversations you tick. Messages are read on this Mac.").font(.callout).foregroundStyle(.secondary)
-            TextField("Filter", text: $filter).textFieldStyle(.roundedBorder)
-            if loading { ProgressView().frame(maxWidth: .infinity, alignment: .center).padding() }
-            ForEach(problems, id: \.self) { p in
-                Label(p, systemImage: "lock").font(.callout).foregroundStyle(.orange)
+        ZStack {
+            AppBackground()
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Heading("Choose chats", size: 24)
+                    Text("I only read the conversations you tick. Messages are read on this Mac.").font(.system(size: 14)).foregroundStyle(Theme.secondary)
+                }
+                SearchField(text: $filter, prompt: "Filter")
+                if loading { HStack { Spacer(); ThinkingDot(size: 12); Spacer() }.padding() }
+                ForEach(problems, id: \.self) { p in
+                    Label(p, systemImage: "lock").font(.system(size: 13)).foregroundStyle(Theme.secondary)
+                }
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        section("Messages", imessage, selected: \.imessageChats) { id, on in model.update { c in toggle(&c.imessageChats, id, on) } }
+                        section("WhatsApp", whatsapp, selected: \.whatsappChats) { id, on in model.update { c in toggle(&c.whatsappChats, id, on) } }
+                    }
+                }
+                HStack { Spacer(); Button("Done") { model.windows.close("chats") }.keyboardShortcut(.defaultAction).buttonStyle(PrimaryButtonStyle()) }
             }
-            List {
-                section("Messages", imessage, selected: \.imessageChats) { id, on in model.update { c in toggle(&c.imessageChats, id, on) } }
-                section("WhatsApp", whatsapp, selected: \.whatsappChats) { id, on in model.update { c in toggle(&c.whatsappChats, id, on) } }
-            }
-            HStack { Spacer(); Button("Done") { model.windows.close("chats") }.keyboardShortcut(.defaultAction) }
+            .padding(.horizontal, 28).padding(.top, 48).padding(.bottom, 22)
         }
-        .padding(20)
+        .environment(\.colorScheme, .dark).tint(Theme.text)
         .task { await load() }
     }
 
     @ViewBuilder private func section(_ title: String, _ chats: [ChatSummary], selected: KeyPath<OffloadConfig, [String]>, set: @escaping (String, Bool) -> Void) -> some View {
         let shown = chats.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) }
         if !shown.isEmpty {
-            Section(title) {
-                ForEach(shown, id: \.id) { chat in
-                    Toggle(isOn: Binding(get: { model.config[keyPath: selected].contains(chat.id) }, set: { set(chat.id, $0) })) {
-                        HStack {
-                            Image(systemName: chat.isGroup ? "person.2" : "person").foregroundStyle(.secondary)
-                            Text(chat.name).lineLimit(1)
-                            Spacer()
-                            Text("\(chat.messageCount)").font(.caption).foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.secondary).padding(.leading, 4)
+                VStack(spacing: 0) {
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { i, chat in
+                        Toggle(isOn: Binding(get: { model.config[keyPath: selected].contains(chat.id) }, set: { set(chat.id, $0) })) {
+                            HStack(spacing: 10) {
+                                Image(systemName: chat.isGroup ? "person.2" : "person").foregroundStyle(Theme.tertiary).frame(width: 20)
+                                Text(chat.name).font(.system(size: 14)).foregroundStyle(Theme.text).lineLimit(1)
+                                Spacer()
+                                Text("\(chat.messageCount)").font(.system(size: 12)).foregroundStyle(Theme.tertiary).monospacedDigit()
+                            }
                         }
+                        .toggleStyle(PillToggleStyle())
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        if i < shown.count - 1 { Divider().overlay(Theme.border) }
                     }
                 }
+                .surfaceCard()
             }
         }
     }

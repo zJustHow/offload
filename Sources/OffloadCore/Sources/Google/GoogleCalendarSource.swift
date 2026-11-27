@@ -5,7 +5,9 @@ import Foundation
 public struct GoogleCalendarSource: CalendarEventSource {
     let api: GoogleAPI
 
-    public init(auth: GoogleAuth, transport: HTTPTransport = URLSessionTransport()) { self.api = GoogleAPI(auth: auth, transport: transport) }
+    public init(auth: GoogleAuth, transport: HTTPTransport = URLSessionTransport(), retry: GoogleRetryPolicy = .standard) {
+        self.api = GoogleAPI(auth: auth, transport: transport, retry: retry)
+    }
 
     public func events(from: Date, to: Date) async throws -> [CalendarEventData] {
         guard await api.auth.hasScope(GoogleAuth.calendarScope) else { throw GoogleError.missingScope("Google Calendar") }

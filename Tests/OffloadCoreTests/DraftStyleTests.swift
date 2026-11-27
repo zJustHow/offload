@@ -49,6 +49,41 @@ final class DraftStyleTests: XCTestCase {
         XCTAssertEqual(d.usedItems, ["lease"])
     }
 
+    func testTheInstructionGuidesRetrievalToo() async throws {
+        // The screen says nothing about the lease; the instruction asks for a fact from it. A store
+        // with a single excerpt returns it for any query, so Friday gets enough excerpts of its own
+        // to fill every slot: the lease only appears if the instruction steers the search to it.
+        let indexer = Indexer(store: store, embedder: HashingEmbedder())
+        for i in 0..<6 {
+            try store.upsertItem(ItemRecord(id: "fri\(i)", bucket: "b", kind: .file, uri: "/docs/friday\(i).md", title: "Friday \(i)", itemDate: nil, fingerprint: "f\(i)", summary: "s", verdict: .survivor, trust: .authored))
+            try await indexer.indexChunks(itemID: "fri\(i)", texts: ["Sam and I are meeting on Friday afternoon at the cafe, plan number \(i)."])
+        }
+        let screen = "Sam: are we still on for Friday afternoon?"
+        let seen = Box<[String]>([])
+        let model = MockModel(contextChars: 30_000) { req in seen.append(req.messages.last!.text); return "Yes, Friday works." }
+        let drafter = ReplyDrafter(memory: memory, model: model)
+
+        _ = try await drafter.draft(visibleText: screen)
+        XCTAssertFalse(seen.value[0].contains("LD-55821"), "without the instruction nothing points at the lease")
+
+        let d = try await drafter.draft(visibleText: screen, instruction: "  say yes, and give the landlord Alvarez deposit reference  ")
+        XCTAssertTrue(seen.value[1].contains("LD-55821"), "the instruction names what to look up")
+        XCTAssertTrue(d.usedItems.contains("lease"), "the screen's own topic (Friday) is still searched too")
+        XCTAssertTrue(seen.value[1].contains("## The user's instruction for this reply\nsay yes, and give the landlord Alvarez deposit reference\n"), "trimmed, in its own section")
+    }
+
+    func testAScreenshotAloneWithAnInstructionCanStillBeAnswered() async throws {
+        let seen = Box<[String]>([])
+        let model = MockModel(contextChars: 30_000) { req in seen.append(req.messages.last!.text); return "Here you go." }
+        let drafter = ReplyDrafter(memory: memory, model: model)
+        let d = try await drafter.draft(visibleText: "", screenshot: Data([1, 2, 3]), instruction: "send the Alvarez deposit reference")
+        XCTAssertEqual(d.usedItems, ["lease"], "no text on screen: the instruction alone is the query")
+        XCTAssertTrue(seen.value[0].contains("(see the screenshot)"))
+        // A blank instruction is no instruction.
+        _ = try await drafter.draft(visibleText: "Alvarez: hello", instruction: "   ")
+        XCTAssertFalse(seen.value[1].contains("The user's instruction"))
+    }
+
     func testNothingToReplyToIsAnError() async {
         let drafter = ReplyDrafter(memory: memory, model: MockModel { _ in "x" })
         do { _ = try await drafter.draft(visibleText: "   "); XCTFail("expected an error") } catch { XCTAssertTrue("\(error)".contains("nothing visible")) }

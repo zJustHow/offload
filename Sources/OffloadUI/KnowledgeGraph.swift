@@ -113,7 +113,7 @@ public enum GraphLayout {
     }
 }
 
-/// The constellation: stars sized by how connected they are, tinted by folder, joined by faint
+/// The constellation: stars sized by how connected they are, shaded by folder, joined by faint
 /// threads; pan, zoom, hover for a name, click to open.
 public struct GraphView: View {
     let graph: KnowledgeGraph
@@ -130,7 +130,8 @@ public struct GraphView: View {
         self.graph = graph; self.points = points; self.selection = selection; self.onSelect = onSelect
     }
 
-    public static let palette: [Color] = [Color(hex: 0xBC82F3), Color(hex: 0x8D99FF), Color(hex: 0xFF6778), Color(hex: 0xFFBA71), Color(hex: 0xF5B9EA), Color(hex: 0x70D6C2), Color(hex: 0xC686FF)]
+    /// One gray per folder (brightness is the only thing that tells them apart), all light enough to read on black.
+    public static let palette: [Color] = [Color(hex: 0xD6D6D6), Color(hex: 0x9C9C9C), Color(hex: 0xEFEFEF), Color(hex: 0x7C7C7C), Color(hex: 0xBFBFBF), Color(hex: 0x8A8A8A), Color(hex: 0xE2E2E2)]
     static func color(_ n: KnowledgeGraph.Node) -> Color { n.domainIndex < 0 ? .white : palette[n.domainIndex % palette.count] }
 
     public var body: some View {

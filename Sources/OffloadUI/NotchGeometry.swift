@@ -34,15 +34,28 @@ public struct NotchGeometry: Equatable, Sendable {
 /// How big the assistant's surface should be in each state. Pure so it can be tested; the view
 /// animates between these sizes.
 public enum NotchLayout {
-    public static func size(phase: NotchModel.Phase, notch: CGSize, steps: Int = 0, answerLength: Int = 0) -> CGSize {
+    /// An answer longer than this (in characters) gets a scroll view, and its card fades into glass at the bottom.
+    public static let longAnswer = 420
+
+    /// Whether the surface should dissolve from black into glass along its bottom edge.
+    public static func fadesToGlass(phase: NotchModel.Phase, answerLength: Int) -> Bool { phase == .answer && answerLength > longAnswer }
+
+    /// - `checklist`: rows of the assistant's checklist being drawn; `planLines`: lines of a plan awaiting
+    ///   approval (0 for an ordinary question); `options`: answer buttons under a question.
+    public static func size(phase: NotchModel.Phase, notch: CGSize, steps: Int = 0, answerLength: Int = 0, checklist: Int = 0, planLines: Int = 0, options: Int = 0) -> CGSize {
         let top = notch.height
         switch phase {
         case .hidden: return CGSize(width: notch.width, height: notch.height)
         case .compact: return CGSize(width: notch.width + 2 * 104, height: notch.height)
-        case .input: return CGSize(width: 480, height: top + 76)
+        case .input: return CGSize(width: 500, height: top + 104)
         case .thinking: return CGSize(width: 420, height: top + 52)
-        case .working: return CGSize(width: 480, height: top + 40 + 21 * CGFloat(min(max(steps, 1), 4)))
-        case .confirm: return CGSize(width: 480, height: top + 168)
+        case .working:
+            let list = checklist > 0 ? 8 + 20 * CGFloat(min(checklist, NotchModel.maxChecklistRows)) : 0
+            return CGSize(width: 480, height: top + 40 + 21 * CGFloat(min(max(steps, 1), 4)) + list)
+        case .confirm:
+            return CGSize(width: 480, height: planLines > 0 ? top + 124 + 22 * CGFloat(min(planLines, NotchModel.maxPlanLines)) : top + 168)
+        case .question:
+            return CGSize(width: 480, height: top + 118 + 34 * CGFloat(min(options, NotchModel.maxOptions)))
         case .error: return CGSize(width: 440, height: top + 84)
         case .answer:
             let lines = max(2, Int((Double(answerLength) / 56).rounded(.up)))

@@ -7,13 +7,15 @@ final class StubGoogle: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var requests: [URLRequest] = []
     var routes: [(match: (URLRequest) -> Bool, respond: (URLRequest) -> (Int, Any))] = []
+    /// Headers added to every response (for example `Retry-After`).
+    var headers: [String: String] = [:]
     func on(_ contains: String, _ respond: @escaping (URLRequest) -> (Int, Any)) { routes.append(({ $0.url!.absoluteString.contains(contains) }, respond)) }
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         lock.withLock { requests.append(request) }
         for r in routes where r.match(request) {
             let (code, body) = r.respond(request)
             let data = (body as? Data) ?? (try! JSONSerialization.data(withJSONObject: body))
-            return (data, HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: nil, headerFields: nil)!)
+            return (data, HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: nil, headerFields: headers.isEmpty ? nil : headers)!)
         }
         return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
     }
@@ -183,6 +185,100 @@ final class GoogleTests: XCTestCase {
         let auth = try signedIn(limited)
         limited.on("/messages?") { _ in (403, ["error": ["message": "Gmail API has not been used in project 1 before or it is disabled."]]) }
         do { _ = try await GmailConnector(auth: auth, transport: limited).list(); XCTFail() } catch { XCTAssertTrue("\(error)".contains("disabled")) }
+    }
+
+    // MARK: Gmail quota: back-off, progress that survives a failure, vanished mail
+
+    /// A retry policy that records how long it was told to wait instead of waiting.
+    func recordingRetry(maxRetries: Int, sleeps: Box<[TimeInterval]>) -> GoogleRetryPolicy {
+        GoogleRetryPolicy(maxRetries: maxRetries, baseDelay: 2, maxDelay: 32, jitter: 0, sleep: { s in sleeps.mutate { $0.append(s) } })
+    }
+    static let perMinuteQuota = "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user' of service 'gmail.googleapis.com'"
+
+    func testQuotaErrorsAreRetriedWithGrowingBackoff() async throws {
+        let stub = StubGoogle()
+        let auth = try signedIn(stub)
+        let sleeps = Box<[TimeInterval]>([])
+        let hits = Box<Int>(0)
+        stub.on("/messages?") { _ in
+            hits.mutate { $0 += 1 }
+            if hits.value <= 3 { return (403, ["error": ["message": GoogleTests.perMinuteQuota]]) }
+            return (200, ["messages": [] as [Any]])
+        }
+        let refs = try await GmailConnector(auth: auth, transport: stub, retry: recordingRetry(maxRetries: 4, sleeps: sleeps)).list()
+        XCTAssertTrue(refs.isEmpty)
+        XCTAssertEqual(stub.count("/messages?"), 4, "three quota errors, then success")
+        XCTAssertEqual(sleeps.value.count, 3)
+        for (got, want) in zip(sleeps.value, [2.0, 4.0, 8.0]) { XCTAssertEqual(got, want, accuracy: 0.5, "doubling, as Google advises") }
+    }
+
+    func testRetryAfterWinsAndGivingUpIsExplained() async throws {
+        let stub = StubGoogle()
+        let auth = try signedIn(stub)
+        stub.headers = ["Retry-After": "30"]
+        let sleeps = Box<[TimeInterval]>([])
+        stub.on("/messages?") { _ in (429, ["error": ["message": "Too many requests"]]) }
+        do { _ = try await GmailConnector(auth: auth, transport: stub, retry: recordingRetry(maxRetries: 2, sleeps: sleeps)).list(); XCTFail() }
+        catch { XCTAssertTrue("\(error)".contains("still limited after 2 retries"), "\(error)") }
+        XCTAssertEqual(stub.count("/messages?"), 3, "the first try plus two retries, then it stops")
+        XCTAssertEqual(sleeps.value.count, 2)
+        XCTAssertEqual(sleeps.value[0], 30, accuracy: 0.5, "the server's Retry-After is longer than our own back-off")
+    }
+
+    func testDisabledApiAndDailyLimitAreNotRetried() async throws {
+        for message in ["Gmail API has not been used in project 1 before or it is disabled.", "Daily Limit Exceeded", "Quota exceeded for quota metric 'Queries' and limit 'Queries per day'"] {
+            let stub = StubGoogle()
+            let auth = try signedIn(stub)
+            let sleeps = Box<[TimeInterval]>([])
+            stub.on("/messages?") { _ in (403, ["error": ["message": message]]) }
+            do { _ = try await GmailConnector(auth: auth, transport: stub, retry: recordingRetry(maxRetries: 4, sleeps: sleeps)).list(); XCTFail(message) } catch {}
+            XCTAssertEqual(stub.count("/messages?"), 1, "waiting a few seconds cannot fix: \(message)")
+            XCTAssertTrue(sleeps.value.isEmpty)
+        }
+    }
+
+    func testMetadataFetchedBeforeAQuotaFailureIsKeptAndTheNextRunOnlyFetchesTheRest() async throws {
+        let stub = StubGoogle()
+        let auth = try signedIn(stub)
+        let ids = (1...6).map { "m\($0)" }
+        let limited = Box<Bool>(true)
+        stub.on("/messages?") { _ in (200, ["messages": ids.map { ["id": $0] }]) }
+        stub.on("format=metadata") { req in
+            let id = req.url!.pathComponents.last!
+            if limited.value, ["m4", "m5", "m6"].contains(id) { return (403, ["error": ["message": GoogleTests.perMinuteQuota]]) }
+            return (200, self.message(id, internalDate: 1_700_000_000_000, subject: "Subject \(id)"))
+        }
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent("gmail-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        var c = GmailConnector(auth: auth, transport: stub, cacheURL: cache, retry: recordingRetry(maxRetries: 1, sleeps: Box([])))
+        c.metadataConcurrency = 1   // deterministic: m1, m2, m3 succeed, m4 is refused
+
+        do { _ = try await c.list(); XCTFail("the quota error must be reported") } catch { XCTAssertTrue("\(error)".contains("per-minute quota"), "\(error)") }
+        let saved = try JSONDecoder().decode([String: GmailConnector.Meta].self, from: Data(contentsOf: cache))
+        XCTAssertEqual(Set(saved.keys), ["m1", "m2", "m3"], "what arrived before the failure was saved")
+        let afterFailure = stub.count("format=metadata")
+
+        limited.mutate { $0 = false }
+        let refs = try await c.list()
+        XCTAssertEqual(refs.map(\.key), ids)
+        XCTAssertEqual(stub.count("format=metadata") - afterFailure, 3, "only m4, m5 and m6 were fetched again")
+    }
+
+    func testMailDeletedBetweenTheListingAndTheFetchIsSkippedNotFatal() async throws {
+        let stub = StubGoogle()
+        let auth = try signedIn(stub)
+        stub.on("/messages?") { _ in (200, ["messages": ["m1", "m2", "m3"].map { ["id": $0] }]) }
+        stub.on("format=metadata") { req in
+            let id = req.url!.pathComponents.last!
+            if id == "m2" { return (404, ["error": ["message": "Requested entity was not found."]]) }
+            return (200, self.message(id, internalDate: 1_700_000_000_000, subject: "Subject \(id)"))
+        }
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent("gmail-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let refs = try await GmailConnector(auth: auth, transport: stub, cacheURL: cache).list()
+        XCTAssertEqual(refs.map(\.key), ["m1", "m3"], "the vanished message is simply not listed (and never given a placeholder date)")
+        let saved = try JSONDecoder().decode([String: GmailConnector.Meta].self, from: Data(contentsOf: cache))
+        XCTAssertEqual(Set(saved.keys), ["m1", "m3"])
     }
 
     func testGmailBodyParsingMultipartHtmlAttachmentsCharsetsAndQuotes() throws {

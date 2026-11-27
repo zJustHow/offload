@@ -3,37 +3,63 @@ import OffloadCore
 import OffloadUI
 import SwiftUI
 
+/// The knowledge base, laid out like ChatGPT: a dark sidebar with a round search field and the list of
+/// notes (as it lists chats), and the chosen note on the canvas beside it with the view switcher on top.
 struct KnowledgeView: View {
     @ObservedObject var model: KnowledgeModel
 
     var body: some View {
-        NavigationSplitView {
-            sidebar.navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 360)
-        } detail: {
-            detail
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                SearchField(text: $model.query, prompt: "Search by meaning or exact words") { model.runSearch() }
+                    .padding(.horizontal, 12).padding(.top, 44).padding(.bottom, 10)   // clears the window's traffic lights
+                sidebar
+            }
+            .frame(width: 284).frame(maxHeight: .infinity, alignment: .top)
+            .background(Theme.sidebar)
+            ZStack(alignment: .top) {
+                AppBackground()
+                VStack(spacing: 0) {
+                    topBar
+                    detail
+                }
+            }
         }
-        .searchable(text: $model.query, placement: .sidebar, prompt: "Search by meaning or exact words")
-        .onSubmit(of: .search) { model.runSearch() }
+        .environment(\.colorScheme, .dark)
+        .tint(Theme.text)
+        .scrollContentBackground(.hidden)
+        .background(Theme.canvas)
         .onChange(of: model.query) { _, q in if q.isEmpty { model.runSearch() } }
-        .toolbar {
-            ToolbarItemGroup(placement: .principal) {
-                Picker("View", selection: $model.mode) { ForEach(KnowledgeModel.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented).frame(width: 220)
-            }
-            ToolbarItemGroup {
-                Button { model.showingNewNote = true } label: { Label("New note", systemImage: "square.and.pencil") }.help("New note (⌘N)").keyboardShortcut("n")
-                Menu {
-                    Button("Show in Finder") { if let p = model.selection, let rt = model.app.runtime { NSWorkspace.shared.activateFileViewerSelecting([rt.workspace.root.appendingPathComponent(p)]) } }.disabled(model.selection == nil)
-                    Button("Delete note…", role: .destructive) { model.confirmingDelete = true }.disabled(!model.canEdit)
-                } label: { Label("More", systemImage: "ellipsis.circle") }
-            }
-        }
         .sheet(isPresented: $model.showingNewNote) { NewNoteSheet(model: model) }
         .confirmationDialog("Move “\(model.selectedNote?.title ?? "")” to the Trash?", isPresented: $model.confirmingDelete) {
             Button("Move to Trash", role: .destructive) { model.deleteSelected() }
         } message: { Text("You can put it back from the Trash.") }
         .alert("Something went wrong", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("OK") {} } message: { Text(model.error ?? "") }
-        .frame(minWidth: 760, minHeight: 480)
+        .frame(minWidth: 800, minHeight: 500)
+    }
+
+    // MARK: Top bar
+
+    private var topBar: some View {
+        ZStack {
+            PillPicker(selection: $model.mode, options: KnowledgeModel.Mode.allCases, title: { $0.rawValue })
+            HStack(spacing: 4) {
+                Spacer()
+                Button { model.showingNewNote = true } label: { barIcon("square.and.pencil") }
+                    .buttonStyle(.plain).help("New note (⌘N)").keyboardShortcut("n").accessibilityLabel("New note")
+                Menu {
+                    Button("Show in Finder") { if let p = model.selection, let rt = model.app.runtime { NSWorkspace.shared.activateFileViewerSelecting([rt.workspace.root.appendingPathComponent(p)]) } }.disabled(model.selection == nil)
+                    Button("Delete note…", role: .destructive) { model.confirmingDelete = true }.disabled(!model.canEdit)
+                } label: { barIcon("ellipsis") }
+                    .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().accessibilityLabel("More")
+            }
+        }
+        .padding(.horizontal, 16).frame(height: 56)
+    }
+
+    private func barIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(Theme.secondary)
+            .frame(width: 34, height: 34).contentShape(Circle())
     }
 
     // MARK: Sidebar
@@ -43,43 +69,42 @@ struct KnowledgeView: View {
     }
 
     private var tree: some View {
-        List(selection: Binding(get: { model.selection }, set: { if let p = $0 { model.select(p) } })) {
-            if model.overview != nil { Label("Overview", systemImage: "person.text.rectangle").tag("README.md") }
-            ForEach(model.folders, id: \.self) { folder in
-                Section(folder) {
+        ScrollView(showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                if model.overview != nil {
+                    SidebarRow(symbol: "person.text.rectangle", title: "Overview", selected: model.selection == "README.md") { model.select("README.md") }
+                }
+                ForEach(model.folders, id: \.self) { folder in
+                    Text(folder).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                        .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 4)
                     ForEach(model.notes.filter { ($0.path as NSString).deletingLastPathComponent == folder }) { n in
-                        Text(n.title).lineLimit(1).tag(n.path)
+                        SidebarRow(title: n.title, selected: model.selection == n.path) { model.select(n.path) }
                     }
                 }
             }
+            .padding(.horizontal, 10).padding(.bottom, 12)
         }
     }
 
     private var emptySidebar: some View {
         VStack(spacing: 10) {
-            Image(systemName: "books.vertical").font(.system(size: 30)).foregroundStyle(.secondary)
-            Text("No notes yet").font(.headline)
-            Text("Your knowledge base fills in after the first analysis.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("Analyze now") { model.app.startCycle() }.disabled(model.app.cycleRunning)
+            Image(systemName: "books.vertical").font(.system(size: 28)).foregroundStyle(Theme.tertiary)
+            Text("No notes yet").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+            Text("Your knowledge base fills in after the first analysis.").font(.system(size: 13)).foregroundStyle(Theme.secondary).multilineTextAlignment(.center)
+            Button("Analyze now") { model.app.startCycle() }.buttonStyle(QuietButtonStyle()).disabled(model.app.cycleRunning)
         }.padding().frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var searchResults: some View {
-        List {
-            if model.searching { HStack { ProgressView().controlSize(.small); Text("Searching…").foregroundStyle(.secondary) } }
-            else if model.results.isEmpty { Text("No results. Press Return to search.").foregroundStyle(.secondary) }
-            ForEach(model.results) { h in
-                Button { model.open(h) } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Image(systemName: h.kind == .note ? "doc.text" : "tray.full").foregroundStyle(.secondary).font(.caption)
-                            Text(h.title).font(.headline).lineLimit(1)
-                        }
-                        Text(h.snippet).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                        if h.kind == .chunk, let u = h.source?.uri { Text(u).font(.caption2).foregroundStyle(.tertiary).lineLimit(1) }
-                    }
-                }.buttonStyle(.plain)
+        ScrollView(showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                if model.searching { HStack(spacing: 8) { ThinkingDot(size: 9); Text("Searching…").foregroundStyle(Theme.secondary) }.padding(10) }
+                else if model.results.isEmpty { Text("No results. Press Return to search.").font(.system(size: 13)).foregroundStyle(Theme.secondary).padding(10) }
+                ForEach(model.results) { h in
+                    ResultRow(hit: h) { model.open(h) }
+                }
             }
+            .padding(.horizontal, 10).padding(.bottom, 12)
         }
     }
 
@@ -99,19 +124,27 @@ struct KnowledgeView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     MarkdownView(text: note.body, openNote: model.openLink)
                     if !model.evidence.isEmpty {
-                        Divider().padding(.vertical, 8)
-                        Text("Built from \(model.evidence.count) source item\(model.evidence.count == 1 ? "" : "s")").font(.headline)
-                        ForEach(model.evidence, id: \.id) { item in
-                            HStack(spacing: 10) {
-                                Image(systemName: icon(item.kind)).frame(width: 20).foregroundStyle(.secondary)
-                                VStack(alignment: .leading) { Text(item.title); Text(item.uri).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
-                                Spacer()
-                                if item.uri.hasPrefix("/") { Button("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.uri)]) }.buttonStyle(.link) }
+                        Divider().overlay(Theme.border).padding(.vertical, 10)
+                        Text("Built from \(model.evidence.count) source item\(model.evidence.count == 1 ? "" : "s")").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                        VStack(spacing: 0) {
+                            ForEach(Array(model.evidence.enumerated()), id: \.element.id) { i, item in
+                                HStack(spacing: 12) {
+                                    Image(systemName: icon(item.kind)).frame(width: 20).foregroundStyle(Theme.tertiary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.title).font(.system(size: 14)).foregroundStyle(Theme.text)
+                                        Text(item.uri).font(.system(size: 12)).foregroundStyle(Theme.tertiary).lineLimit(1).truncationMode(.middle)
+                                    }
+                                    Spacer()
+                                    if item.uri.hasPrefix("/") { Button("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.uri)]) }.buttonStyle(QuietButtonStyle()) }
+                                }
+                                .padding(.horizontal, 14).padding(.vertical, 10)
+                                if i < model.evidence.count - 1 { Divider().overlay(Theme.border) }
                             }
                         }
+                        .surfaceCard()
                     }
                 }
-                .padding(28).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
+                .padding(.horizontal, 36).padding(.top, 12).padding(.bottom, 32).frame(maxWidth: 780, alignment: .leading).frame(maxWidth: .infinity)
             }
         } else {
             ContentUnavailableView("Select a note", systemImage: "book", description: Text("Your knowledge base is a plain folder of Markdown files."))
@@ -122,56 +155,80 @@ struct KnowledgeView: View {
         if model.canEdit {
             VStack(spacing: 0) {
                 TextEditor(text: $model.draft)
-                    .font(.system(size: 14, design: .monospaced)).scrollContentBackground(.hidden)
-                    .padding(.horizontal, 22).padding(.vertical, 14)
+                    .font(.system(size: 14, design: .monospaced)).foregroundStyle(Theme.text).scrollContentBackground(.hidden)
+                    .padding(.horizontal, 30).padding(.vertical, 14)
                     .accessibilityLabel("Note text")
-                Divider()
+                Divider().overlay(Theme.border)
                 HStack {
-                    Text("Saves automatically. Link notes with [[Note title]].").font(.caption).foregroundStyle(.secondary)
+                    Text("Saves automatically. Link notes with [[Note title]].").font(.system(size: 12)).foregroundStyle(Theme.tertiary)
                     Spacer()
                     saveBadge
-                }.padding(.horizontal, 14).padding(.vertical, 7)
+                }.padding(.horizontal, 20).padding(.vertical, 9)
             }
         } else { ContentUnavailableView("Nothing to edit", systemImage: "square.and.pencil", description: Text("Pick a note first. The Overview is written by Offload and can't be edited.")) }
     }
 
     @ViewBuilder private var saveBadge: some View {
         switch model.saveState {
-        case .saved: Label("Saved", systemImage: "checkmark.circle").foregroundStyle(.secondary)
-        case .saving: Label("Saving…", systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.secondary)
-        case .unsaved: Label("Editing", systemImage: "pencil").foregroundStyle(.orange)
-        case .failed(let m): Label(m, systemImage: "exclamationmark.triangle").foregroundStyle(.red).lineLimit(1)
+        case .saved: Label("Saved", systemImage: "checkmark.circle").font(.system(size: 12)).foregroundStyle(Theme.tertiary)
+        case .saving: Label("Saving…", systemImage: "arrow.triangle.2.circlepath").font(.system(size: 12)).foregroundStyle(Theme.tertiary)
+        case .unsaved: Label("Editing", systemImage: "pencil").font(.system(size: 12)).foregroundStyle(Theme.secondary)
+        case .failed(let m): Label(m, systemImage: "exclamationmark.triangle").font(.system(size: 12)).foregroundStyle(Theme.text).lineLimit(1)
         }
     }
 
     @ViewBuilder private var graphView: some View {
         ZStack {
-            IntelligenceBackground()
+            AppBackground()
             if let g = model.graph, g.nodes.count > 1 {
                 GraphView(graph: g, points: model.positions, selection: model.selection) { model.select($0) }
                 VStack { Spacer(); legend(g) }.padding(14)
             } else if model.graph == nil && !model.notes.isEmpty {
-                VStack(spacing: 10) { IntelligenceOrb(size: 28); ShimmerText("Arranging your notes…") }
+                VStack(spacing: 12) { ThinkingDot(size: 14); ShimmerText("Arranging your notes…") }
             } else {
                 ContentUnavailableView("Not much to connect yet", systemImage: "point.3.connected.trianglepath.dotted", description: Text("Notes link to each other with [[double brackets]]. Once there are a few, they appear here as a constellation."))
             }
         }
-        .environment(\.colorScheme, .dark)
     }
 
     private func legend(_ g: KnowledgeGraph) -> some View {
         HStack(spacing: 14) {
             ForEach(Array(g.domains.enumerated()), id: \.offset) { i, d in
-                HStack(spacing: 5) { Circle().fill(GraphView.palette[i % GraphView.palette.count]).frame(width: 8, height: 8); Text(d).font(.caption).foregroundStyle(.white.opacity(0.8)) }
+                HStack(spacing: 6) { Circle().fill(GraphView.palette[i % GraphView.palette.count]).frame(width: 8, height: 8); Text(d).font(.system(size: 12)).foregroundStyle(Theme.secondary) }
             }
             Spacer()
-            Text("\(g.nodes.count) notes · \(g.edges.count) links").font(.caption).foregroundStyle(.white.opacity(0.5))
+            Text("\(g.nodes.count) notes · \(g.edges.count) links").font(.system(size: 12)).foregroundStyle(Theme.tertiary)
         }
-        .padding(.horizontal, 14).padding(.vertical, 8).glassCard(cornerRadius: 12)
+        .padding(.horizontal, 16).padding(.vertical, 10).surfaceCard(cornerRadius: 14)
     }
 
     private func icon(_ k: SourceKind) -> String {
         switch k { case .file: "doc"; case .image: "photo"; case .note: "note.text"; case .chat: "bubble.left.and.bubble.right"; case .mail: "envelope"; case .calendar: "calendar" }
+    }
+}
+
+/// One hit in the sidebar's search results: title, a snippet and where it came from, lit under the pointer.
+private struct ResultRow: View {
+    let hit: SearchHit
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Image(systemName: hit.kind == .note ? "doc.text" : "tray.full").foregroundStyle(Theme.tertiary).font(.system(size: 12))
+                    Text(hit.title).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.text).lineLimit(1)
+                }
+                Text(hit.snippet).font(.system(size: 12)).foregroundStyle(Theme.secondary).lineLimit(3)
+                if hit.kind == .chunk, let u = hit.source?.uri { Text(u).font(.system(size: 11)).foregroundStyle(Theme.tertiary).lineLimit(1) }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hovering ? Theme.surface : .clear))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -186,21 +243,28 @@ struct NewNoteSheet: View {
     private var chosenFolder: String { folder == "__new__" ? newFolder : folder }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("New note").font(.title3.weight(.semibold))
-            TextField("Title", text: $title).textFieldStyle(.roundedBorder).focused($focused).onSubmit(create)
-            Picker("Folder", selection: $folder) {
-                ForEach(model.folders, id: \.self) { Text($0).tag($0) }
-                Text("New folder…").tag("__new__")
-            }
-            if folder == "__new__" { TextField("Folder name", text: $newFolder).textFieldStyle(.roundedBorder) }
+        VStack(alignment: .leading, spacing: 16) {
+            Heading("New note", size: 20)
+            TextField("Title", text: $title).textFieldStyle(PillTextFieldStyle()).focused($focused).onSubmit(create)
             HStack {
+                Text("Folder").font(.system(size: 14)).foregroundStyle(Theme.secondary)
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Create", action: create).keyboardShortcut(.defaultAction).disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || (folder == "__new__" && newFolder.trimmingCharacters(in: .whitespaces).isEmpty))
+                Picker("Folder", selection: $folder) {
+                    ForEach(model.folders, id: \.self) { Text($0).tag($0) }
+                    Text("New folder…").tag("__new__")
+                }.labelsHidden().frame(width: 210)
+            }
+            if folder == "__new__" { TextField("Folder name", text: $newFolder).textFieldStyle(PillTextFieldStyle()) }
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).buttonStyle(QuietButtonStyle())
+                Button("Create", action: create).keyboardShortcut(.defaultAction).buttonStyle(PrimaryButtonStyle())
+                    .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || (folder == "__new__" && newFolder.trimmingCharacters(in: .whitespaces).isEmpty))
             }
         }
-        .padding(22).frame(width: 380)
+        .padding(24).frame(width: 420)
+        .background(Theme.canvas)
+        .environment(\.colorScheme, .dark).tint(Theme.text)
         .onAppear { folder = model.selection.map { ($0 as NSString).deletingLastPathComponent }.flatMap { model.folders.contains($0) ? $0 : nil } ?? model.folders.first ?? "__new__"; focused = true }
     }
 

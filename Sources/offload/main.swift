@@ -11,6 +11,7 @@ struct Args {
         var i = 0
         while i < raw.count {
             let a = raw[i]
+            if a == "--" { positional.append(contentsOf: raw[(i + 1)...]); break }     // everything after is literal
             if a.hasPrefix("--") {
                 let name = String(a.dropFirst(2))
                 if valueFlags.contains(name), i + 1 < raw.count { flags[name] = raw[i + 1]; i += 1 } else { switches.insert(name) }
@@ -35,7 +36,7 @@ SETUP
   doctor                                   check models, permissions and storage
   status                                   what has been read, indexed and prepared
   config show
-  config model <triage|knowledge|assistant> --provider <apple|openai|anthropic|claude-cli|codex-cli> [--model M] [--base-url U] [--key-stdin] [--vision]
+  config model <triage|knowledge|assistant> --provider <apple|openai|anthropic|claude-cli|codex-cli> [--model M] [--base-url U] [--key-stdin] [--vision] [--memory-tools] [--agent-tools]
   config embedding --kind <apple-contextual|apple-sentence|hashing|openai> [--model M] [--base-url U] [--key-stdin]
   config vault <path>
   sources add-folder <path> | remove-folder <path> | list
@@ -51,7 +52,11 @@ USE
   search <query> [--mode hybrid|lexical|exact|vector] [--limit N] [--notes-only] [--local]
   ask <question>                           answer from your memory, with sources
   draft [--instruction T] [--screen]       draft a reply to text on stdin (or the screen)
-  agent <task> [--computer] [--yes] [--max-steps N]
+  agent <task> [--computer] [--yes] [--max-steps N] [--mode read-only|write|act|prompt|allow] [--plan] [--no-mcp]
+        [--allow RULE,...] [--deny RULE,...] [--ask RULE,...]   rules: tool, prefix*, tool(pattern*)
+  tools [--computer]                       list what the assistant can do, and what each tool needs
+  apps list | add <name> [--env K=V,K=keychain:acct] [--required] [--read-only] [--no-redact] [--timeout S] [--tools a,b] -- <command> [args...]
+  apps remove <name> | enable <name> | disable <name> | test [name]   connect assistant apps (MCP servers)
   suggestions [list | dismiss <id> | done <id>]
   mcp                                      MCP server on stdio for Claude Desktop / Claude Code
   eval                                     compare retrieval strategies on the bundled corpus
@@ -62,7 +67,7 @@ USE
 let argv = Array(CommandLine.arguments.dropFirst())
 guard let command = argv.first else { out(usage); exit(0) }
 let rest = Array(argv.dropFirst())
-let valueFlags: Set<String> = ["client-id", "max", "mode", "limit", "instruction", "provider", "model", "base-url", "kind", "max-steps", "quiet-period"]
+let valueFlags: Set<String> = ["client-id", "max", "mode", "limit", "instruction", "provider", "model", "base-url", "kind", "max-steps", "quiet-period", "allow", "deny", "ask", "env", "timeout", "tools", "host"]
 let args = Args(rest, valueFlags: valueFlags)
 
 do {
@@ -78,6 +83,8 @@ do {
     case "ask": try await Commands.ask(args)
     case "draft": try await Commands.draft(args)
     case "agent": try await Commands.agent(args)
+    case "tools": try await Commands.tools(args)
+    case "apps": try await Commands.apps(args, raw: rest)
     case "suggestions": try Commands.suggestions(args)
     case "mcp": try await Commands.mcp(args)
     case "eval": try await Commands.eval()

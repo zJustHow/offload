@@ -59,6 +59,15 @@ public final class VaultEditor: @unchecked Sendable {
         try await indexer.indexNote(path: safe, body: body)
     }
 
+    /// Writes a note whose content has already been validated (an edit the user approved) and
+    /// indexes it. Creating and replacing are the same call; `README.md` is never written.
+    public func put(path: String, body: String) async throws {
+        guard let safe = VaultOps.normalizePath(path) else { throw VaultEditorError.invalidName }
+        if safe == "README.md" { throw VaultEditorError.readOnly }
+        try write(body, to: safe)
+        try await indexer.indexNote(path: safe, body: body)
+    }
+
     /// Moves a note to the Trash (recoverable) and forgets it.
     public func delete(path: String) throws {
         guard let safe = VaultOps.normalizePath(path) else { throw VaultEditorError.invalidName }

@@ -83,7 +83,7 @@ extension AppModel {
         let c = config
         let chats = c.imessageChats.count + c.whatsappChats.count
         return [
-            SourceOption(id: "folders", title: "Folders", subtitle: "Documents, notes, PDFs and screenshots you keep in folders.", symbol: "folder", style: .folders, isOn: !c.folders.isEmpty,
+            SourceOption(id: "folders", title: "Folders", subtitle: "Documents, notes, PDFs, Word and PowerPoint files, and screenshots you keep in folders.", symbol: "folder", style: .folders, isOn: !c.folders.isEmpty,
                          detail: c.folders.isEmpty ? nil : "\(c.folders.count) folder\(c.folders.count == 1 ? "" : "s") chosen"),
             SourceOption(id: "notes", title: "Apple Notes", subtitle: "Your notes in the Notes app.", symbol: "note.text", isOn: c.appleNotesEnabled, needsFullDiskAccess: true),
             SourceOption(id: "mail", title: "Apple Mail", subtitle: "Messages in your mailboxes. They're read on this Mac and never sent anywhere.", symbol: "envelope", isOn: c.mailEnabled, needsFullDiskAccess: true),

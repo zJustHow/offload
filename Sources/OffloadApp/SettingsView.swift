@@ -5,18 +5,55 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    static let size = CGSize(width: 800, height: 600)
 
+    private static let tabs: [(tab: SettingsTab, title: String, symbol: String)] = [
+        (.general, "General", "gearshape"), (.sources, "Sources", "tray.full"), (.models, "Models", "cpu"),
+        (.privacy, "Privacy", "hand.raised"), (.schedule, "Nightly", "moon.stars"), (.advanced, "Advanced", "wrench.and.screwdriver"),
+    ]
+
+    /// ChatGPT's settings: a list of sections on the left, and the chosen one on the right.
     var body: some View {
-        TabView(selection: $model.settingsTab) {
-            GeneralTab(model: model).tabItem { Label("General", systemImage: "gearshape") }.tag(SettingsTab.general)
-            SourcesTab(model: model).tabItem { Label("Sources", systemImage: "tray.full") }.tag(SettingsTab.sources)
-            ModelsTab(model: model).tabItem { Label("Models", systemImage: "cpu") }.tag(SettingsTab.models)
-            PrivacyTab(model: model).tabItem { Label("Privacy", systemImage: "hand.raised") }.tag(SettingsTab.privacy)
-            ScheduleTab(model: model).tabItem { Label("Nightly", systemImage: "moon.stars") }.tag(SettingsTab.schedule)
-            AdvancedTab(model: model).tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }.tag(SettingsTab.advanced)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Settings").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                    .padding(.horizontal, 10).padding(.bottom, 12)
+                ForEach(Self.tabs, id: \.tab) { item in
+                    SidebarRow(symbol: item.symbol, title: item.title, selected: model.settingsTab == item.tab) { model.settingsTab = item.tab }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10).padding(.bottom, 12).padding(.top, 44)   // clears the window's traffic lights
+            .frame(width: 210).frame(maxHeight: .infinity, alignment: .top)
+            .background(Theme.sidebar)
+            ZStack(alignment: .top) {
+                AppBackground()
+                VStack(alignment: .leading, spacing: 0) {
+                    Heading(Self.tabs.first { $0.tab == model.settingsTab }?.title ?? "", size: 22)
+                        .padding(.horizontal, 28).padding(.top, 40).padding(.bottom, 4)
+                    content.id(model.settingsTab)
+                }
+            }
         }
-        .frame(width: 660, height: 560)
-        .onAppear { NSApp.setActivationPolicy(.regular) }
+        .frame(width: Self.size.width, height: Self.size.height)
+        .background(Theme.canvas)
+        // Native controls inside the forms take the app's look: white accent, pill switches, outlined buttons, no gray backdrop.
+        .environment(\.colorScheme, .dark)
+        .tint(Theme.text)
+        .toggleStyle(PillToggleStyle())
+        .buttonStyle(QuietButtonStyle())
+        .scrollContentBackground(.hidden)
+    }
+
+    @ViewBuilder private var content: some View {
+        switch model.settingsTab {
+        case .general: GeneralTab(model: model)
+        case .sources: SourcesTab(model: model)
+        case .models: ModelsTab(model: model)
+        case .privacy: PrivacyTab(model: model)
+        case .schedule: ScheduleTab(model: model)
+        case .advanced: AdvancedTab(model: model)
+        }
     }
 }
 
@@ -26,7 +63,7 @@ private func config<T>(_ model: AppModel, _ keyPath: WritableKeyPath<OffloadConf
     Binding(get: { model.config[keyPath: keyPath] }, set: { v in model.update { $0[keyPath: keyPath] = v } })
 }
 
-private func note(_ text: String) -> some View { Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+private func note(_ text: String) -> some View { Text(text).font(.system(size: 12)).foregroundStyle(Theme.tertiary).fixedSize(horizontal: false, vertical: true) }
 
 // MARK: General
 
@@ -46,7 +83,7 @@ private struct GeneralTab: View {
             Section("About") {
                 LabeledContent("Version") { Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development build") }
                 LabeledContent("Your data") {
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([model.paths.support]) }.buttonStyle(.link)
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([model.paths.support]) }.buttonStyle(PlainLinkButtonStyle())
                 }
             }
         }
@@ -67,7 +104,7 @@ private struct SourcesTab: View {
         Form {
             Section("Folders") {
                 ForEach(model.config.folders, id: \.self) { f in
-                    HStack { Image(systemName: "folder").foregroundStyle(.secondary); Text(f).lineLimit(1).truncationMode(.middle); Spacer(); Button("Remove") { model.update { $0.folders.removeAll { $0 == f } } }.buttonStyle(.link) }
+                    HStack { Image(systemName: "folder").foregroundStyle(.secondary); Text(f).lineLimit(1).truncationMode(.middle); Spacer(); Button("Remove") { model.update { $0.folders.removeAll { $0 == f } } }.buttonStyle(PlainLinkButtonStyle()) }
                 }
                 Button("Add folder…") { model.pickFolders {} }
             }
@@ -144,15 +181,15 @@ private struct ModelsTab: View {
         Form {
             Section {
                 ModelPicker(title: "Writes your notes (use a strong model)", profile: config(model, \.knowledge))
-                ModelPicker(title: "Answers, drafts and acts", profile: config(model, \.assistant))
+                ModelPicker(title: "Answers, drafts and acts", profile: config(model, \.assistant), offersLookups: true)
                 ModelPicker(title: "Reads every item (keep this local)", profile: config(model, \.triage))
                 if model.config.knowledge.provider == .apple {
-                    Label("The built-in model is weak at merging many items into notes. A stronger model makes noticeably better notes.", systemImage: "info.circle").font(.callout).foregroundStyle(.orange)
+                    Label("The built-in model is weak at merging many items into notes. A stronger model makes noticeably better notes.", systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                 }
                 if model.config.triage.provider != .apple {
-                    Label("Reading covers every item, so a hosted model here receives the text of all your files, mail and messages.", systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                    Label("Reading covers every item, so a hosted model here receives the text of all your files, mail and messages.", systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.secondary)
                 }
-                ForEach(model.runtime?.fallbackNotes ?? [], id: \.self) { Label($0, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange) }
+                ForEach(model.runtime?.fallbackNotes ?? [], id: \.self) { Label($0, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.secondary) }
             }
             Section("API key") {
                 SecureField("Key for an API model (saved in your Keychain)", text: $apiKey)
@@ -178,6 +215,8 @@ private struct ModelsTab: View {
 private struct ModelPicker: View {
     let title: String
     @Binding var profile: ModelProfile
+    /// Only the model that answers questions may be allowed to look things up itself.
+    var offersLookups = false
     @State private var status = ""
 
     var body: some View {
@@ -198,8 +237,16 @@ private struct ModelPicker: View {
             }
             switch profile.provider {
             case .claudeCLI, .codexCLI:
-                Text(status.isEmpty ? "Checking…" : status).font(.caption).foregroundStyle(status.hasPrefix("Logged in") ? Color.green : Color.orange)
+                Text(status.isEmpty ? "Checking…" : status).font(.caption).foregroundStyle(status.hasPrefix("Logged in") ? Color.primary : Color.secondary)
                 TextField("Model (optional, e.g. sonnet)", text: Binding(get: { profile.model ?? "" }, set: { profile.model = $0.isEmpty ? nil : $0 }))
+                if offersLookups, profile.provider == .claudeCLI {
+                    Toggle("Let Claude look things up in your notes itself", isOn: Binding(get: { profile.memoryTools == true }, set: { profile.memoryTools = $0 ? true : nil }))
+                    Text("When you ask a question, Claude may search and read your notes through Offload's read-only helper, instead of only seeing the excerpts Offload picked. It has no other tools, and what it reads is cleaned of card numbers and passwords first.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Let Claude carry out “Do” tasks itself", isOn: Binding(get: { profile.agentTools == true }, set: { profile.agentTools = $0 ? true : nil }))
+                    Text("Claude plans and calls the same tools Offload's own assistant has (notes, the web if you turned it on, connected apps, operating your Mac). Every call still runs inside Offload, which asks you before anything risky, shows progress in the notch, and cleans what Claude reads.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             case .openaiCompatible:
                 TextField("Model name", text: Binding(get: { profile.model ?? "" }, set: { profile.model = $0 }))
                 TextField("Base URL", text: Binding(get: { profile.baseURL ?? "" }, set: { profile.baseURL = $0 }))
@@ -244,7 +291,7 @@ private struct PrivacyTab: View {
         LabeledContent(title) {
             HStack {
                 Text(url?.path ?? "—").lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary).frame(maxWidth: 260, alignment: .trailing)
-                if let url { Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([url]) }.buttonStyle(.link) }
+                if let url { Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([url]) }.buttonStyle(PlainLinkButtonStyle()) }
             }
         }
     }
@@ -309,7 +356,7 @@ private struct AdvancedTab: View {
                         StatusDot(HealthStatus(rawValue: h.status.rawValue) ?? .optional)
                         VStack(alignment: .leading, spacing: 1) { Text(h.title); Text(h.detail).font(.caption).foregroundStyle(.secondary) }
                         Spacer()
-                        if h.status == .needsAction || (h.status == .optional && h.settingsURL != nil), let url = h.settingsURL { Button("Open Settings") { model.openURL(url) }.buttonStyle(.link) }
+                        if h.status == .needsAction || (h.status == .optional && h.settingsURL != nil), let url = h.settingsURL { Button("Open Settings") { model.openURL(url) }.buttonStyle(PlainLinkButtonStyle()) }
                     }
                 }
                 Button("Check again") { Task { await load() } }

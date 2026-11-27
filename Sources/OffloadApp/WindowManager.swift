@@ -19,6 +19,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
         if immersive { mask.insert(.fullSizeContentView) }
         let w = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: mask, backing: .buffered, defer: false)
         w.title = title
+        w.appearance = NSAppearance(named: .darkAqua)   // the app is dark, so native controls and menus must be too
         w.isReleasedWhenClosed = false
         w.contentView = NSHostingView(rootView: content())
         w.setContentSize(size)
@@ -27,8 +28,8 @@ final class WindowManager: NSObject, NSWindowDelegate {
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.isMovableByWindowBackground = true
-            w.backgroundColor = NSColor(calibratedRed: 0.04, green: 0.04, blue: 0.07, alpha: 1)
-            w.standardWindowButton(.zoomButton)?.isHidden = true
+            w.backgroundColor = NSColor(calibratedWhite: 0.129, alpha: 1)
+            if !resizable { w.standardWindowButton(.zoomButton)?.isHidden = true }
         }
         w.delegate = self
         w.center()

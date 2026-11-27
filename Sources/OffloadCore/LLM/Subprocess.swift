@@ -9,13 +9,31 @@ public struct ProcessResult: Sendable {
     public var stderrText: String { String(decoding: stderr, as: UTF8.self) }
 }
 
+/// Lets a caller stop a program that `Subprocess.run` started (when the task that awaits it is cancelled).
+public final class ProcessCanceller: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+    public init() {}
+
+    func attach(_ p: Process) {
+        lock.lock(); process = p; let already = cancelled; lock.unlock()
+        if already { p.terminate() }
+    }
+
+    public func cancel() {
+        lock.lock(); cancelled = true; let p = process; lock.unlock()
+        p?.terminate()
+    }
+}
+
 /// Runs an external program without a shell (arguments are an array, so nothing a prompt or a
 /// path contains can be interpreted as a command), feeding it stdin and collecting both output
 /// streams concurrently so a chatty child can never deadlock on a full pipe.
 public enum Subprocess {
     public static func run(
         executable: URL, arguments: [String], stdin: Data? = nil, workingDirectory: URL? = nil,
-        environment: [String: String]? = nil, timeout: TimeInterval = 300
+        environment: [String: String]? = nil, timeout: TimeInterval = 300, canceller: ProcessCanceller? = nil
     ) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -27,6 +45,7 @@ public enum Subprocess {
                 let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
                 p.standardOutput = outPipe; p.standardError = errPipe; p.standardInput = inPipe
                 do { try p.run() } catch { cont.resume(throwing: error); return }
+                canceller?.attach(p)
 
                 var out = Data(), err = Data()
                 let group = DispatchGroup()

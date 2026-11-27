@@ -81,57 +81,116 @@ public struct HomeView: View {
     @ObservedObject var model: HomeModel
     var now: Date
     var fixedPhase: Double?
-    public static let size = CGSize(width: 860, height: 660)
+    public static let size = CGSize(width: 960, height: 700)
+    private static let sidebarWidth: CGFloat = 244
 
     public init(model: HomeModel, now: Date = Date(), fixedPhase: Double? = nil) { self.model = model; self.now = now; self.fixedPhase = fixedPhase }
 
     public var body: some View {
         let d = model.data
-        ZStack {
-            IntelligenceBackground(phase: fixedPhase)
-            AdaptiveScroll {
-                VStack(alignment: .leading, spacing: 20) {
-                    header(d)
-                    HStack(spacing: 12) {
-                        tile(d.itemsRead.formatted(), "items read", action: nil)
-                        tile(d.notes.formatted(), "notes in your knowledge base", action: model.onOpenKnowledge)
-                        tile(d.suggestions.formatted(), d.suggestions == 1 ? "suggestion ready" : "suggestions ready", action: model.onOpenSuggestions)
+        HStack(spacing: 0) {
+            sidebar(d)
+            ZStack {
+                AppBackground()
+                VStack(spacing: 0) {
+                    topBar(d)
+                    AdaptiveScroll {
+                        VStack(spacing: 22) {
+                            greeting(d)
+                            composer
+                            hint
+                            HStack(spacing: 12) {
+                                tile(d.itemsRead.formatted(), "items read", action: nil)
+                                tile(d.notes.formatted(), "notes in your knowledge base", action: model.onOpenKnowledge)
+                                tile(d.suggestions.formatted(), d.suggestions == 1 ? "suggestion ready" : "suggestions ready", action: model.onOpenSuggestions)
+                            }
+                            if d.analysis.phase == .running { runningPanel(d.analysis) }
+                            if !d.attention.isEmpty { VStack(alignment: .leading, spacing: 8) { sectionTitle("Needs attention"); attention(d) } }
+                            VStack(alignment: .leading, spacing: 8) { sectionTitle("Recent activity"); activity(d) }
+                        }
+                        .frame(maxWidth: 640).padding(.horizontal, 28).padding(.bottom, 28).padding(.top, 8)
+                        .frame(maxWidth: .infinity)
                     }
-                    if d.analysis.phase == .running { runningPanel(d.analysis) }
-                    HStack(alignment: .top, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 10) { sectionTitle("Sources"); sources(d) }.frame(maxWidth: .infinity, alignment: .topLeading)
-                        VStack(alignment: .leading, spacing: 14) {
-                            if !d.attention.isEmpty { VStack(alignment: .leading, spacing: 10) { sectionTitle("Needs attention"); attention(d) } }
-                            VStack(alignment: .leading, spacing: 10) { sectionTitle("Recent activity"); activity(d) }
-                        }.frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                    tips
                 }
-                .padding(28)
             }
         }
         .frame(width: Self.size.width, height: Self.size.height)
+        .background(Theme.canvas)
         .environment(\.colorScheme, .dark)
     }
 
-    // MARK: pieces
+    // MARK: sidebar (the list on the left, as in ChatGPT: a "new" button, places to go, then what it knows)
 
-    private func header(_ d: HomeData) -> some View {
-        HStack(spacing: 16) {
-            IntelligenceOrb(size: 46, phase: fixedPhase)
-            VStack(alignment: .leading, spacing: 3) {
-                GradientText(HomeText.greeting(at: now), size: 28)
-                Text(d.lastRun.map { "Last read \(HomeText.relative($0, now: now))." } ?? "I haven't read anything yet.")
-                    .font(.system(size: 14)).foregroundStyle(Theme.secondary)
+    private func sidebar(_ d: HomeData) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 10) {
+                AppMark(size: 26)
+                Text("Offload").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
             }
+            .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 14)
+            SidebarRow(symbol: "square.and.pencil", title: "Ask or give a task") { model.onOpenAssistant?() }
+            SidebarRow(symbol: "books.vertical", title: "Knowledge") { model.onOpenKnowledge?() }
+            SidebarRow(symbol: "sparkles", title: "Suggestions", trailing: d.suggestions > 0 ? "\(d.suggestions)" : nil) { model.onOpenSuggestions?() }
+            Text("Sources").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.tertiary).padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 4)
+            if d.sources.isEmpty {
+                Text("No sources yet.").font(.system(size: 13)).foregroundStyle(Theme.tertiary).padding(.horizontal, 10).padding(.vertical, 6)
+            }
+            ForEach(d.sources) { s in
+                SidebarRow(symbol: s.symbol, title: s.title, trailing: "\(s.itemCount)", status: s.status == .ok ? nil : s.status, help: s.detail, action: nil)
+            }
+            Spacer(minLength: 0)
+            SidebarRow(symbol: "gearshape", title: "Settings") { model.onOpenSettings?() }
+            SidebarRow(symbol: "questionmark.circle", title: "Welcome guide") { model.onShowGuide?() }
+        }
+        .padding(.horizontal, 10).padding(.bottom, 12).padding(.top, 38)   // clears the window's traffic lights
+        .frame(width: Self.sidebarWidth).frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.sidebar)
+    }
+
+    // MARK: main column
+
+    private func topBar(_ d: HomeData) -> some View {
+        HStack {
             Spacer()
-            Button("Ask or give a task") { model.onOpenAssistant?() }.buttonStyle(QuietButtonStyle())
             if d.analysis.phase == .running {
                 Button("Stop") { model.onStop?() }.buttonStyle(QuietButtonStyle())
             } else {
-                Button("Analyze now") { model.onAnalyze?() }.buttonStyle(PrimaryButtonStyle())
+                Button("Analyze now") { model.onAnalyze?() }.buttonStyle(QuietButtonStyle())
             }
         }
+        .padding(.horizontal, 20).frame(height: 56)
+    }
+
+    private func greeting(_ d: HomeData) -> some View {
+        VStack(spacing: 6) {
+            Heading(HomeText.greeting(at: now), size: 30)
+            Text(d.lastRun.map { "Last read \(HomeText.relative($0, now: now))." } ?? "I haven't read anything yet.")
+                .font(.system(size: 14)).foregroundStyle(Theme.secondary)
+        }
+        .padding(.top, 14)
+    }
+
+    /// ChatGPT's composer, as a button: a round field with the send arrow at its end. It opens the assistant.
+    private var composer: some View {
+        Button { model.onOpenAssistant?() } label: {
+            HStack(spacing: 12) {
+                Text("Ask or give a task").font(.system(size: 16)).foregroundStyle(Theme.tertiary)
+                Spacer()
+                SendGlyph(enabled: true, size: 34)
+            }
+            .padding(.leading, 22).padding(.trailing, 11).frame(height: 58)
+            .background(Theme.surface, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Ask or give a task")
+        .accessibilityHint("Opens the assistant in the notch")
+    }
+
+    private var hint: some View {
+        Text("Click the notch or press ⌘⇧Space to ask  ·  Double-tap right ⌘ to draft a reply")
+            .font(.system(size: 12)).foregroundStyle(Theme.tertiary).multilineTextAlignment(.center)
+            .padding(.bottom, 4)
     }
 
     @ViewBuilder private func tile(_ value: String, _ label: String, action: (() -> Void)?) -> some View {
@@ -142,89 +201,55 @@ public struct HomeView: View {
     private func runningPanel(_ a: AnalysisState) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                IntelligenceOrb(size: 18, phase: fixedPhase)
-                ShimmerText(a.source.map { "Reading \($0)" } ?? a.stage, font: .system(size: 14, weight: .semibold), phase: fixedPhase)
+                ThinkingDot(size: 10, phase: fixedPhase)
+                ShimmerText(a.source.map { "Reading \($0)" } ?? a.stage, font: .system(size: 14, weight: .medium), phase: fixedPhase)
                 Spacer()
                 if a.total > 0 { Text("\(a.done) of \(a.total)").font(.system(size: 12)).foregroundStyle(Theme.secondary) }
             }
-            GradientProgress(a.fraction)
+            ProgressBar(a.fraction)
             if let t = a.currentTitle { Text(t).font(.system(size: 12)).foregroundStyle(Theme.tertiary).lineLimit(1) }
         }
-        .padding(14).glassCard(cornerRadius: 14)
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading).surfaceCard()
     }
 
-    private func sectionTitle(_ t: String) -> some View { Text(t.uppercased()).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.tertiary).padding(.leading, 2) }
-
-    private func sources(_ d: HomeData) -> some View {
-        VStack(spacing: 0) {
-            if d.sources.isEmpty {
-                Text("No sources yet. Add one in Settings.").font(.system(size: 13)).foregroundStyle(Theme.secondary).padding(14).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            ForEach(Array(d.sources.enumerated()), id: \.element.id) { i, s in
-                HStack(spacing: 12) {
-                    SymbolBadge(s.symbol, size: 30)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(s.title).font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
-                        Text(s.detail).font(.system(size: 11)).foregroundStyle(Theme.secondary).lineLimit(1)
-                    }
-                    Spacer()
-                    Text("\(s.itemCount)").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.secondary).monospacedDigit()
-                    StatusDot(s.status)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 9)
-                if i < d.sources.count - 1 { Divider().overlay(.white.opacity(0.08)).padding(.leading, 54) }
-            }
-        }
-        .glassCard(cornerRadius: 14)
-    }
+    private func sectionTitle(_ t: String) -> some View { Text(t).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.secondary).padding(.leading, 4) }
 
     private func attention(_ d: HomeData) -> some View {
         VStack(spacing: 0) {
             ForEach(Array(d.attention.enumerated()), id: \.element.id) { i, a in
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.warn).font(.system(size: 14)).padding(.top, 1)
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.warn).font(.system(size: 15)).padding(.top, 1)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(a.title).font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
-                        Text(a.detail).font(.system(size: 11)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+                        Text(a.title).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.text)
+                        Text(a.detail).font(.system(size: 13)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 6)
                     if let t = a.actionTitle, let url = a.url { Button(t) { model.onOpenURL?(url) }.buttonStyle(QuietButtonStyle()) }
                     else if let t = a.actionTitle { Button(t) { model.onOpenSettings?() }.buttonStyle(QuietButtonStyle()) }
                 }
-                .padding(12)
-                if i < d.attention.count - 1 { Divider().overlay(.white.opacity(0.08)) }
+                .padding(14)
+                if i < d.attention.count - 1 { Divider().overlay(Theme.border) }
             }
         }
-        .glassCard(cornerRadius: 14)
+        .surfaceCard()
     }
 
     private func activity(_ d: HomeData) -> some View {
         VStack(spacing: 0) {
             if d.activity.isEmpty { Text("Nothing yet.").font(.system(size: 13)).foregroundStyle(Theme.secondary).padding(14).frame(maxWidth: .infinity, alignment: .leading) }
             ForEach(Array(d.activity.prefix(5).enumerated()), id: \.element.id) { i, a in
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: a.isWarning ? "exclamationmark.triangle" : "checkmark.circle").font(.system(size: 12)).foregroundStyle(a.isWarning ? Theme.warn : Theme.good).padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(a.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.9)).fixedSize(horizontal: false, vertical: true)
-                        Text(HomeText.relative(a.date, now: now)).font(.system(size: 11)).foregroundStyle(Theme.tertiary)
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: a.isWarning ? "exclamationmark.triangle" : "checkmark.circle").font(.system(size: 13)).foregroundStyle(a.isWarning ? Theme.warn : Theme.tertiary).padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(a.text).font(.system(size: 13)).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
+                        Text(HomeText.relative(a.date, now: now)).font(.system(size: 12)).foregroundStyle(Theme.tertiary)
                     }
                     Spacer()
                 }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                if i < min(5, d.activity.count) - 1 { Divider().overlay(.white.opacity(0.08)) }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                if i < min(5, d.activity.count) - 1 { Divider().overlay(Theme.border) }
             }
         }
-        .glassCard(cornerRadius: 14)
-    }
-
-    private var tips: some View {
-        HStack(spacing: 18) {
-            Label("Click the notch or press ⌘⇧Space to ask", systemImage: "sparkles")
-            Label("Double-tap right ⌘ to draft a reply", systemImage: "text.bubble")
-            Spacer()
-            Button("Welcome guide") { model.onShowGuide?() }.buttonStyle(.plain).foregroundStyle(Theme.tertiary)
-            Button("Settings") { model.onOpenSettings?() }.buttonStyle(.plain).foregroundStyle(Theme.tertiary)
-        }
-        .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+        .surfaceCard()
     }
 }

@@ -2,7 +2,7 @@ import AppKit
 import OffloadUI
 import SwiftUI
 
-/// The app icon: a deep-night squircle holding a softly glowing orb with a sparkle, drawn on the
+/// The app icon: a near-black squircle holding a white disc with a dark sparkle, drawn on the
 /// macOS icon grid (artwork inset to ~80% of the canvas, as the system expects).
 struct AppIconArt: View {
     var side: CGFloat
@@ -10,17 +10,12 @@ struct AppIconArt: View {
         let art = side * 0.8, corner = art * 0.2237
         ZStack {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
-                .fill(LinearGradient(colors: [Color(hex: 0x1A2250), Color(hex: 0x2B1B52), Color(hex: 0x0B0F24)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .fill(LinearGradient(colors: [Color(hex: 0x2A2A2A), Color(hex: 0x1A1A1A), Color(hex: 0x0D0D0D)], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .frame(width: art, height: art)
                 .shadow(color: .black.opacity(0.35), radius: side * 0.02, y: side * 0.012)
-            ZStack {   // everything luminous stays inside the silhouette, so the edge is crisp at every size
-                IntelligenceGlow(shape: RoundedRectangle(cornerRadius: corner, style: .continuous), phase: 2.6, intensity: 0.8, lineWidth: max(1, art * 0.016))
-                IntelligenceOrb(size: art * 0.54, phase: 2.6)
-                Image(systemName: "sparkle").resizable().scaledToFit().foregroundStyle(.white.opacity(0.95))
-                    .frame(width: art * 0.22, height: art * 0.22).shadow(color: .white.opacity(0.6), radius: art * 0.03)
-            }
-            .frame(width: art, height: art)
-            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            Circle().fill(Color.white.opacity(0.96)).frame(width: art * 0.56, height: art * 0.56)
+            Image(systemName: "sparkle").resizable().scaledToFit().foregroundStyle(Color.black)
+                .frame(width: art * 0.27, height: art * 0.27)
         }
         .frame(width: side, height: side)
         .environment(\.stillMotion, true)
@@ -51,15 +46,15 @@ struct Previews {
             topLeft: CGRect(x: 0, y: 950, width: 663.5, height: 32), topRight: CGRect(x: 848.5, y: 950, width: 663.5, height: 32))
         let phase = 2.6
 
-        func scene(_ model: NotchModel, glowPhase: Double = phase) -> some View {
+        func scene(_ model: NotchModel, glowPhase: Double = phase, height: CGFloat = 330) -> some View {
             ZStack(alignment: .top) {
-                LinearGradient(colors: [Color(hex: 0x1B2A55), Color(hex: 0x3A1F5E), Color(hex: 0x0E1220)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                LinearGradient(colors: [Color(hex: 0x3A3A3A), Color(hex: 0x262626), Color(hex: 0x101010)], startPoint: .topLeading, endPoint: .bottomTrailing)
                 Rectangle().fill(.black.opacity(0.28)).frame(height: geo.height).frame(maxHeight: .infinity, alignment: .top)
                 NotchShape(topRadius: 6, bottomRadius: 12).fill(.black).frame(width: geo.width, height: geo.height)   // the hardware notch
                 NotchView(model: model, geometry: geo, fixedPhase: glowPhase)
             }
             .frame(width: 760, height: NotchView.canvas.height, alignment: .top)
-            .frame(width: 760, height: 330, alignment: .top)   // anchor to the top edge, as the real panel is
+            .frame(width: 760, height: height, alignment: .top)   // anchor to the top edge, as the real panel is
             .clipped()
         }
 
@@ -89,9 +84,46 @@ struct Previews {
         await Task.yield()
         save(scene(confirm), "notch-confirm")
 
+        let checklist = NotchModel(); checklist.present(mode: .act); checklist.input = "reply"; checklist.submit()
+        for s in ["Searching your notes for the landlord", "Opening Mail"] { checklist.addStep(s) }
+        checklist.setChecklist([.init("Find the lease", .done), .init("Open the email from Mr. Alvarez", .done), .init("Write the reply", .active), .init("Check the deposit reference", .pending), .init("Show you the draft", .pending)])
+        save(scene(checklist), "notch-working-checklist")
+
+        let plan = NotchModel(); plan.present(mode: .act); plan.input = "x"; plan.submit(); plan.addStep("Looking around")
+        Task { @MainActor in _ = await plan.requestApproval(.init(kind: .plan, detail: "Plan: 1. Open Mail and find the thread with Mr. Alvarez 2. Read the question about the deposit 3. Write a reply using the lease and the deposit reference 4. Leave it as a draft for you to send")) }
+        await Task.yield()
+        save(scene(plan), "notch-plan")
+
+        let external = NotchModel(); external.present(mode: .act); external.input = "x"; external.submit(); external.addStep("Adding a task")
+        Task { @MainActor in _ = await external.requestApproval(.init(kind: .needsApproval, detail: "mcp__tasks__create_task(title=Call Mr. Alvarez about the deposit)", reason: "'mcp__tasks__create_task' comes from an external server and needs your approval")) }
+        await Task.yield()
+        save(scene(external), "notch-approval-external")
+
+        let choice = NotchModel(); choice.present(mode: .act); choice.input = "x"; choice.submit(); choice.addStep("Writing the reply")
+        Task { @MainActor in _ = await choice.requestAnswer(question: "Which email address should I reply from?", options: ["work@acme.com", "me@home.org", "Both threads"]) }
+        await Task.yield()
+        save(scene(choice), "notch-question-options")
+
+        let typed = NotchModel(); typed.present(mode: .act); typed.input = "x"; typed.submit(); typed.addStep("Booking")
+        Task { @MainActor in _ = await typed.requestAnswer(question: "What time on Friday works for the call?") }
+        await Task.yield()
+        save(scene(typed), "notch-question-text")
+
         let answer = NotchModel(); answer.present(); answer.input = "x"; answer.submit()
         answer.finish(answer: "Your flight is UA 837 from San Francisco to Shanghai Pudong on March 3 at 11:40, seat 24A. The confirmation code is K7P2QX. The return leg is on March 21 with a layover in Tokyo.", sources: ["Flight Booking", "Home/Travel.md"])
         save(scene(answer), "notch-answer")
+
+        // A long answer: the card is solid black at the top and dissolves into glass along the bottom edge.
+        let longAnswer = NotchModel(); longAnswer.present(); longAnswer.input = "x"; longAnswer.submit()
+        longAnswer.finish(answer: String(repeating: "Your flight is UA 837 from San Francisco to Shanghai Pudong on March 3 at 11:40, seat 24A. The confirmation code is K7P2QX. ", count: 6), sources: ["Flight Booking", "Home/Travel.md"])
+        save(scene(longAnswer, height: 480), "notch-answer-long")
+
+        let replyInput = NotchModel(); replyInput.present(mode: .reply)
+        save(scene(replyInput), "notch-reply-input")
+
+        let draft = NotchModel(); draft.present(mode: .reply); draft.input = "say Friday 3pm works and give the deposit reference"; draft.submit()
+        draft.finishDraft("Hi Mr. Alvarez, Friday at 3pm works for me. The deposit reference is LD-55821, wired on 3 March.", sources: ["Home/Apartment.md", "Lease from Mr. Alvarez about the security deposit"])
+        save(scene(draft), "notch-reply-draft")
 
         let err = NotchModel(); err.present(); err.input = "x"; err.submit(); err.fail("Claude usage limit reached. Try again later.")
         save(scene(err), "notch-error")
@@ -108,20 +140,28 @@ struct Previews {
         save(ring, "glow-frames")
 
         let kit = ZStack {
-            IntelligenceBackground(phase: 3, dark: true)
-            VStack(spacing: 18) {
-                HStack(spacing: 14) {
-                    IntelligenceOrb(size: 34, phase: 1.5)
-                    ShimmerText("Thinking about your question…", font: .system(size: 18, weight: .medium), phase: 0.9)
+            AppBackground()
+            VStack(spacing: 16) {
+                HStack(spacing: 10) {
+                    ThinkingDot(size: 12, phase: 1.5)
+                    ShimmerText("Thinking about your question…", font: .system(size: 16, weight: .medium), phase: 0.9)
                 }
-                Text("Where did I put the landlord's number?").foregroundStyle(.white).padding(.horizontal, 16).padding(.vertical, 12).frame(width: 380, alignment: .leading)
-                    .glassCard().intelligenceGlowBorder(active: true)
+                Text("Where did I put the landlord's number?").foregroundStyle(Theme.text).padding(.horizontal, 16).padding(.vertical, 11)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .frame(width: 440, alignment: .trailing)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Suggestion").font(.caption).foregroundStyle(.white.opacity(0.6))
-                    Text("Confirm the term sheet with Orion by Friday").foregroundStyle(.white).font(.headline)
-                }.padding(16).frame(width: 380, alignment: .leading).glassCard()
+                    Text("Suggestion").font(.caption).foregroundStyle(Theme.secondary)
+                    Text("Confirm the term sheet with Orion by Friday").foregroundStyle(Theme.text).font(.headline)
+                }.padding(16).frame(width: 440, alignment: .leading).surfaceCard()
+                HStack(spacing: 10) {
+                    Button("Continue") {}.buttonStyle(PrimaryButtonStyle())
+                    Button("Not now") {}.buttonStyle(QuietButtonStyle())
+                    PillSwitch(isOn: .constant(true), label: "On"); PillSwitch(isOn: .constant(false), label: "Off")
+                    SendGlyph(enabled: true, size: 34); SendGlyph(enabled: false, size: 34)
+                }
+                ProgressBar(0.4).frame(width: 440)
             }
-        }.frame(width: 520, height: 330)
+        }.frame(width: 560, height: 360)
         save(kit, "ui-kit")
 
         // First-run guide, every step.
@@ -152,9 +192,9 @@ struct Previews {
         }
         vault.append(("Work/Cross.md", "Cross", "[[Apartment]] [[Japan trip]] [[Acme Corp]] [[Mr. Alvarez]]"))
         let graph = KnowledgeGraph.build(notes: vault)
-        save(ZStack { Color(hex: 0x0E1220); GraphView(graph: graph, points: GraphLayout.positions(for: graph), selection: "Home/Lease.md", onSelect: { _ in }) }.frame(width: 760, height: 520), "knowledge-graph")
+        save(ZStack { Color(hex: 0x0E0E0E); GraphView(graph: graph, points: GraphLayout.positions(for: graph), selection: "Home/Lease.md", onSelect: { _ in }) }.frame(width: 760, height: 520), "knowledge-graph")
 
-        let edge = ZStack { Color(hex: 0x10131F); ScreenEdgeGlowView(visible: true, phase: 2.0).padding(2) }.frame(width: 640, height: 400)
+        let edge = ZStack { Color(hex: 0x101010); ScreenEdgeGlowView(visible: true, phase: 2.0).padding(2) }.frame(width: 640, height: 400)
         save(edge, "edge-glow")
     }
 }

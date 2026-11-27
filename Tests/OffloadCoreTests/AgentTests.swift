@@ -98,7 +98,7 @@ final class AgentTests: XCTestCase {
     }
 
     func testRiskClassifierCoversEnglishChineseAndEnterKey() {
-        func a(_ tool: String, _ thought: String, _ args: [String: String] = [:], flagged: Bool = false) -> AgentAction {
+        func a(_ tool: String, _ thought: String, _ args: JSONObject = [:], flagged: Bool = false) -> AgentAction {
             AgentAction(thought: thought, tool: tool, args: args, declaredIrreversible: flagged)
         }
         XCTAssertTrue(RiskClassifier.isIrreversible(a("click", "click the Submit button")))
@@ -174,14 +174,42 @@ final class AgentTests: XCTestCase {
         XCTAssertTrue(prompt.contains("irreversible"))
     }
 
-    func testHistoryTrimmingKeepsTaskAndRecentTurns() {
-        var msgs: [ChatMessage] = [.system("sys"), .user("TASK")]
-        for i in 0..<20 { msgs.append(.assistant("a\(i) " + String(repeating: "x", count: 500))); msgs.append(.user("o\(i) " + String(repeating: "y", count: 500))) }
-        let trimmed = Agent.trimHistory(msgs, budget: 4_000)
-        XCTAssertEqual(trimmed.count, msgs.count)
-        XCTAssertEqual(trimmed[1].text, "TASK")
-        XCTAssertEqual(trimmed.last?.text, msgs.last?.text)
-        XCTAssertLessThan(trimmed.reduce(0) { $0 + $1.text.count }, msgs.reduce(0) { $0 + $1.text.count })
+    func testHistoryCompactionKeepsTaskAndRecentTurnsAndDigestsTheRest() {
+        var msgs: [ChatMessage] = [.system("sys"), .user("THE TASK: find the lease")]
+        for i in 0..<20 {
+            msgs.append(.assistant(#"{"thought":"t","tool":"search_memory","args":{"query":"q\#(i)"}}"# + String(repeating: " ", count: 500)))
+            msgs.append(.user("Observation: result \(i) " + String(repeating: "y", count: 500)))
+        }
+        let compacted = HistoryCompactor.compact(msgs, budget: 4_000)
+        XCTAssertEqual(compacted[0].text, "sys")
+        XCTAssertTrue(compacted[1].text.hasPrefix("THE TASK: find the lease"), "the task stays first")
+        XCTAssertTrue(compacted[1].text.contains(HistoryCompactor.marker), "older steps are summarized into the task message")
+        XCTAssertTrue(compacted[1].text.contains("search_memory(query=q"), "the digest says what was done")
+        XCTAssertTrue(compacted[1].text.contains("result"), "...and what came back")
+        XCTAssertEqual(compacted.last?.text, msgs.last?.text, "recent steps are kept verbatim")
+        XCTAssertEqual(compacted.count, 2 + 4, "system, task, and the last two steps")
+        XCTAssertEqual(compacted[2].role, .assistant, "a step is never split from its observation")
+        XCTAssertLessThan(HistoryCompactor.size(of: compacted), HistoryCompactor.size(of: msgs))
+        XCTAssertLessThan(compacted[1].text.count, 2_400, "the digest is capped")
+    }
+
+    func testCompactionIsStableWhenRepeatedAndOmitsTheOldestFirst() {
+        var msgs: [ChatMessage] = [.system("sys"), .user("THE TASK: t")]
+        for i in 0..<60 {
+            msgs.append(.assistant(#"{"thought":"t","tool":"read_note","args":{"path":"Folder/Note\#(i).md"}}"#))
+            msgs.append(.user("Observation: body \(i) " + String(repeating: "z", count: 300)))
+            msgs = HistoryCompactor.compact(msgs, budget: 3_000)
+        }
+        XCTAssertLessThanOrEqual(HistoryCompactor.size(of: msgs), 3_400)
+        XCTAssertTrue(msgs[1].text.contains("earlier steps not listed"), msgs[1].text)
+        XCTAssertTrue(msgs[1].text.contains("Note5"), "the newest digest lines survive: \(msgs[1].text)")
+        XCTAssertFalse(msgs[1].text.contains("Note0.md"), "the oldest were dropped first")
+        XCTAssertEqual(msgs.filter { $0.role == .user }.count, msgs.filter { $0.role == .assistant }.count + 1, "pairs stay whole: the task is the one extra user message")
+    }
+
+    func testNothingIsChangedWhileTheConversationFits() {
+        let msgs: [ChatMessage] = [.system("sys"), .user("task"), .assistant("{}"), .user("Observation: ok")]
+        XCTAssertEqual(HistoryCompactor.compact(msgs, budget: 10_000), msgs)
     }
 }
 

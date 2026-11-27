@@ -77,7 +77,7 @@ final class MemoryMCPTests: XCTestCase {
         let list = try await call(s, #"{"jsonrpc":"2.0","id":"abc","method":"tools/list"}"#)
         XCTAssertEqual(list["id"] as? String, "abc", "string ids round-trip")
         let tools = ((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String }
-        XCTAssertEqual(Set(tools ?? []), ["get_structure", "get_files", "search_memory"])
+        XCTAssertEqual(Set(tools ?? []), ["get_structure", "get_files", "search_memory", "read_item"])
 
         let unknown = try await call(s, #"{"jsonrpc":"2.0","id":2,"method":"nope"}"#)
         XCTAssertEqual((unknown["error"] as? [String: Any])?["code"] as? Int, -32601)

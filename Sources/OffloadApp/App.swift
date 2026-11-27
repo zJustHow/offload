@@ -12,6 +12,11 @@ struct OffloadApp: App {
             Image(systemName: "sparkles").symbolEffect(.variableColor.iterative, isActive: model.cycleRunning)
                 .accessibilityLabel("Offload")
         }
-        Settings { SettingsView(model: model) }
+        // Settings is a window of our own (so it can look like the rest of the app); this keeps ⌘, working.
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { model.openSettings() }.keyboardShortcut(",")
+            }
+        }
     }
 }

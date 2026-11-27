@@ -43,6 +43,8 @@ public final class Runtime: @unchecked Sendable {
     /// Reading sources is one job at a time: a full cycle and live sync take turns, so a file that
     /// changed during a cycle is not read and triaged by both at once.
     private let ingestGate = AsyncMutex()
+    /// The user's MCP servers, connected on first use and kept for the life of this runtime.
+    let assistantTools = AssistantToolState()
 
     /// `models` overrides the configured models; it exists so tests (and embedders of the library)
     /// can supply their own implementations.
@@ -62,14 +64,23 @@ public final class Runtime: @unchecked Sendable {
         // A model that cannot be built (its tool was uninstalled, its key is gone) must not take the
         // whole app down: fall back to the built-in one and say so.
         var notes: [String] = []
-        func resolve(_ role: String, _ profile: ModelProfile, _ override: LanguageModel?) -> LanguageModel {
+        // Claude may look things up itself, or carry out the assistant's tasks, but only in the assistant role:
+        // nothing that reads untrusted items or writes notes ever gets either.
+        var helper: ClaudeCLIModel.MemoryServer?
+        let wantsLookups = cfg.assistant.provider == .claudeCLI && cfg.assistant.memoryTools == true
+        let wantsTasks = cfg.assistant.provider == .claudeCLI && cfg.assistant.agentTools == true
+        if wantsLookups || wantsTasks {
+            helper = ClaudeCLIModel.MemoryServer.locate(home: paths.support)
+            if helper == nil { notes.append("Claude cannot use Offload's tools: the `offload` command was not found next to the app. It answers from the excerpts it is given.") }
+        }
+        func resolve(_ role: String, _ profile: ModelProfile, _ override: LanguageModel?, lookups: ClaudeCLIModel.MemoryServer? = nil, tasks: ClaudeCLIModel.MemoryServer? = nil) -> LanguageModel {
             if let override { return override.redactingIfHosted() }
-            do { return try Self.makeModel(profile) }
+            do { return try Self.makeModel(profile, memoryServer: lookups, taskServer: tasks) }
             catch { notes.append("\(role) model unavailable (\(error)); using the built-in model"); return AppleOnDeviceModel() }
         }
         self.triageModel = resolve("Triage", cfg.triage, models?.triage)
         self.knowledgeModel = resolve("Knowledge", cfg.knowledge, models?.knowledge)
-        self.assistantModel = resolve("Assistant", cfg.assistant, models?.assistant)
+        self.assistantModel = resolve("Assistant", cfg.assistant, models?.assistant, lookups: wantsLookups ? helper : nil, tasks: wantsTasks ? helper : nil)
         if let e = try? Self.makeEmbedder(cfg.embedding) { self.embedder = e } else {
             notes.append("Embedding model unavailable; using the built-in one")
             self.embedder = AppleContextualEmbedder()
@@ -86,23 +97,23 @@ public final class Runtime: @unchecked Sendable {
 
     /// Hosted models come back wrapped in `RedactingModel`, so nothing sent to a provider skips
     /// `PIIScan`; local models are returned as they are.
-    public static func makeModel(_ p: ModelProfile) throws -> LanguageModel {
-        try buildModel(p).redactingIfHosted()
+    public static func makeModel(_ p: ModelProfile, memoryServer: ClaudeCLIModel.MemoryServer? = nil, taskServer: ClaudeCLIModel.MemoryServer? = nil) throws -> LanguageModel {
+        try buildModel(p, memoryServer: memoryServer, taskServer: taskServer).redactingIfHosted()
     }
 
-    private static func buildModel(_ p: ModelProfile) throws -> LanguageModel {
+    private static func buildModel(_ p: ModelProfile, memoryServer: ClaudeCLIModel.MemoryServer? = nil, taskServer: ClaudeCLIModel.MemoryServer? = nil) throws -> LanguageModel {
         switch p.provider {
         case .apple: return AppleOnDeviceModel()
         case .openaiCompatible:
             guard let base = p.baseURL.flatMap(URL.init(string:)), let model = p.model else { throw LLMError.unavailable("model profile needs baseURL and model") }
-            return OpenAICompatibleModel(baseURL: base, model: model, apiKey: p.keyAccount.flatMap { Keychain.get(account: $0) }, vision: p.vision ?? false)
-        case .claudeCLI: return try ClaudeCLIModel(model: p.model)
+            return OpenAICompatibleModel(baseURL: base, model: model, apiKey: p.keyAccount.flatMap { Keychain.get(account: $0) }, vision: p.vision ?? false, nativeTools: p.nativeTools ?? false)
+        case .claudeCLI: return try ClaudeCLIModel(model: p.model, memoryServer: memoryServer, taskServer: taskServer)
         case .codexCLI: return try CodexCLIModel(model: p.model)
         case .anthropic:
             guard let model = p.model, let account = p.keyAccount, let key = Keychain.get(account: account) else {
                 throw LLMError.unavailable("Anthropic profile needs a model and an API key stored in the Keychain")
             }
-            return AnthropicModel(model: model, apiKey: key)
+            return AnthropicModel(model: model, apiKey: key, nativeTools: p.nativeTools ?? true)
         }
     }
 

@@ -49,7 +49,7 @@ enum Commands {
         case .apple: return "Apple on-device"
         case .openaiCompatible: return "\(p.model ?? "?") @ \(p.baseURL ?? "?")"
         case .anthropic: return "Anthropic API \(p.model ?? "?")"
-        case .claudeCLI: return "Claude subscription (claude CLI)\(p.model.map { " " + $0 } ?? "")"
+        case .claudeCLI: return "Claude subscription (claude CLI)\(p.model.map { " " + $0 } ?? "")\(p.memoryTools == true ? ", looks things up itself" : "")\(p.agentTools == true ? ", carries out tasks itself" : "")"
         case .codexCLI: return "ChatGPT subscription (codex CLI)\(p.model.map { " " + $0 } ?? "")"
         }
     }
@@ -85,7 +85,9 @@ enum Commands {
             case "anthropic":
                 profile = ModelProfile(provider: .anthropic, model: a.flags["model"])
                 if profile.model == nil { fail("--model is required") }
-            case "claude-cli": profile = ModelProfile(provider: .claudeCLI, model: a.flags["model"])
+            case "claude-cli":
+                profile = ModelProfile(provider: .claudeCLI, model: a.flags["model"], memoryTools: a.has("memory-tools") ? true : nil, agentTools: a.has("agent-tools") ? true : nil)
+                if a.has("memory-tools") || a.has("agent-tools"), role != "assistant" { fail("--memory-tools and --agent-tools apply to the assistant role only: triage and knowledge read untrusted text and write notes, so they never get tools") }
             case "codex-cli": profile = ModelProfile(provider: .codexCLI, model: a.flags["model"])
             default: fail("unknown provider '\(provider)' (apple, openai, ollama, lmstudio, anthropic, claude-cli, codex-cli)")
             }
@@ -304,7 +306,7 @@ enum Commands {
 
     static func agent(_ a: Args) async throws {
         let task = a.positional.joined(separator: " ")
-        guard !task.isEmpty else { fail("usage: agent <task> [--computer] [--yes] [--max-steps N]") }
+        guard !task.isEmpty else { fail("usage: agent <task> [--computer] [--yes] [--max-steps N] [--mode M] [--plan] [--no-mcp] [--allow R] [--deny R] [--ask R]") }
         let rt = try Runtime()
         let auto = a.has("yes")
         let computer: ComputerController? = a.has("computer") ? MacComputerController() : nil
@@ -312,23 +314,114 @@ enum Commands {
             err("The agent needs Screen Recording and Accessibility permission for this terminal. Run `offload doctor`.")
             ComputerPermissions.requestScreenRecording(); ComputerPermissions.requestAccessibility()
         }
-        let agent = Agent(
-            model: rt.assistantModel, memory: rt.memory, computer: computer,
+
+        // Command-line rules are added to the configured ones; a command-line mode replaces the configured mode.
+        var policy = rt.config.agent.permissions
+        if let mode = a.flags["mode"] {
+            guard let m = PermissionMode(rawValue: mode) else { fail("--mode must be one of: \(PermissionMode.allCases.map(\.rawValue).joined(separator: ", "))") }
+            policy.mode = m
+        }
+        func rules(_ flag: String) -> [PermissionRule] { (a.flags[flag] ?? "").split(separator: ",").map { PermissionRule(String($0)) } }
+        policy.allow += rules("allow"); policy.deny += rules("deny"); policy.ask += rules("ask")
+        var overrides = AssistantOverrides()
+        overrides.policy = policy
+        if a.has("plan") { overrides.planFirst = true }
+        overrides.useMCP = !a.has("no-mcp")
+
+        let (agent, notice) = await rt.makeAgent(
+            computer: computer,
             confirm: { description in
                 if auto { err("  (auto-approved) \(description)"); return true }
-                err("\nThe assistant wants to do something that cannot be undone:\n  \(description)\nAllow? [y/N] ")
+                err("\nThe assistant needs your approval:\n  \(description)\nAllow? [y/N] ")
                 return (readLine() ?? "").lowercased().hasPrefix("y")
             },
-            ask: { q in err("\nThe assistant asks: \(q)"); return readLine() })
+            ask: { q in err("\nThe assistant asks: \(q)"); return readLine() },
+            overrides: overrides)
+        if let notice { err("Note: \(notice)") }
         let result = await agent.run(task: task, maxSteps: a.flags["max-steps"].flatMap(Int.init) ?? 25) { event in
             switch event {
             case .step(let n): err("[step \(n)]")
-            case .action(let act): err("  \(act.tool) \(act.args.map { "\($0.key)=\($0.value.prefix(60))" }.sorted().joined(separator: " "))  — \(act.thought.prefix(120))")
+            case .action(let act): err("  \(act.tool) \(act.args.summary(limit: 60))  — \(act.thought.prefix(120))")
             case .observation(let o): err("  → \(o.prefix(160).replacingOccurrences(of: "\n", with: " "))")
+            case .todos(let items): err("  checklist: " + items.map { "\($0.status == .completed ? "[x]" : "[ ]") \($0.content)" }.joined(separator: "  "))
             default: break
             }
         }
+        await rt.shutdownAssistantTools()
         out("\n\(result.status): \(result.summary)")
+    }
+
+    /// Lists the tools an assistant would have, with the access each needs.
+    static func tools(_ a: Args) async throws {
+        let rt = try Runtime()
+        let registry = ToolRegistry([MemoryTools.searchMemory(rt.memory), MemoryTools.readNote(rt.memory), MemoryTools.readItem(rt.memory)])
+        if a.has("computer") { ComputerTools.make(computer: MacComputerController(), memory: rt.memory, vision: false).forEach { registry.register($0) } }
+        let extras = await rt.assistantExtras()
+        extras.tools.forEach { registry.register($0) }
+        if let notice = extras.notice { err("Note: \(notice)") }
+        await rt.shutdownAssistantTools()
+        let policy = rt.config.agent.permissions
+        out("permission mode: \(policy.mode.rawValue)   native tool calling: \(rt.assistantModel.capabilities.nativeTools ? "yes" : "no (JSON text protocol)")")
+        out()
+        for spec in registry.specs {
+            let asks = spec.approval == .always ? "asks" : (policy.mode.covers(spec.tier) ? "runs" : "asks/refuses")
+            out("\(spec.name.padding(toLength: 34, withPad: " ", startingAt: 0)) \(spec.tier.rawValue.padding(toLength: 10, withPad: " ", startingAt: 0)) \(asks.padding(toLength: 13, withPad: " ", startingAt: 0)) \(spec.description.prefix(70))")
+        }
+        out()
+        out("\"runs\" = no question under the current mode; \"asks\" = the user is asked each time unless a rule allows it.")
+    }
+
+    /// Manages the apps (MCP servers) the assistant can use.
+    static func apps(_ a: Args, raw: [String]) async throws {
+        let paths = AppPaths()
+        var cfg = try paths.loadConfig()
+        switch a.positional.first ?? "list" {
+        case "list":
+            if cfg.mcpServers.isEmpty { out("No apps connected. Add one: offload apps add <name> -- <command> [args...]"); return }
+            for s in cfg.mcpServers {
+                out("\(s.enabled ? "on " : "off") \(s.name)  \(([s.command] + s.args).joined(separator: " "))\(s.required ? "  [required]" : "")\(s.readOnly ? "  [read-only]" : "")\(s.redactArguments ? "" : "  [arguments not redacted]")")
+            }
+            return
+        case "add":
+            guard a.positional.count >= 3 else { fail("usage: apps add <name> [options] -- <command> [args...]") }
+            let name = a.positional[1]
+            guard !MCPNaming.normalize(name).isEmpty, !cfg.mcpServers.contains(where: { MCPNaming.normalize($0.name) == MCPNaming.normalize(name) }) else { fail("an app called '\(name)' already exists (or the name is empty)") }
+            var env: [String: String] = [:]
+            for pair in (a.flags["env"] ?? "").split(separator: ",") {
+                let kv = pair.split(separator: "=", maxSplits: 1).map(String.init)
+                guard kv.count == 2 else { fail("--env takes KEY=value pairs (a value of keychain:<account> is read from the Keychain)") }
+                env[kv[0]] = kv[1]
+            }
+            var server = MCPServerConfig(name: name, command: a.positional[2], args: Array(a.positional.dropFirst(3)), env: env, required: a.has("required"), readOnly: a.has("read-only"), redactArguments: !a.has("no-redact"))
+            if let t = a.flags["timeout"].flatMap(Double.init) { server.timeoutSeconds = t }
+            if let list = a.flags["tools"] { server.allowedTools = list.split(separator: ",").map(String.init) }
+            cfg.mcpServers.append(server)
+            out("Added '\(name)'. Its tools ask for approval before they run, unless you pass --read-only or allow them: offload config / agent --allow 'mcp__\(MCPNaming.normalize(name))__*'")
+        case "remove":
+            guard a.positional.count >= 2 else { fail("usage: apps remove <name>") }
+            cfg.mcpServers.removeAll { $0.name == a.positional[1] }
+        case "enable", "disable":
+            guard a.positional.count >= 2, let i = cfg.mcpServers.firstIndex(where: { $0.name == a.positional[1] }) else { fail("usage: apps \(a.positional[0]) <name>") }
+            cfg.mcpServers[i].enabled = a.positional[0] == "enable"
+        case "test":
+            let selected = a.positional.count >= 2 ? cfg.mcpServers.filter { $0.name == a.positional[1] } : cfg.mcpServers
+            guard !selected.isEmpty else { fail("no such app") }
+            for var s in selected { s.enabled = true
+                let manager = MCPClientManager(configs: [s])
+                let report = await manager.connectAll(timeout: 30)
+                if let failure = report.failed.first { out("FAIL \(s.name) (\(failure.phase.rawValue)): \(failure.message)") }
+                else {
+                    out("OK   \(s.name): \(report.tools.count) tool(s)\(report.resourceServers.isEmpty ? "" : ", offers documents")")
+                    for t in report.tools { out("       \(t.name)  [\(t.tier.rawValue)\(t.approval == .always ? ", asks" : "")]  \(t.description.prefix(60))") }
+                    for w in report.warnings { out("       warning: \(w)") }
+                }
+                await manager.shutdown()
+            }
+            return
+        default: fail("usage: apps [list | add | remove | enable | disable | test]")
+        }
+        try paths.save(cfg)
+        out("Saved.")
     }
 
     static func suggestions(_ a: Args) throws {
@@ -353,6 +446,14 @@ enum Commands {
     }
 
     static func mcp(_ a: Args) async throws {
+        // `--host <socket>`: not a server of its own but a relay to the Offload app or command that started a task
+        // (`claude` runs it). The token comes in the environment, never on the command line.
+        if let socket = a.flags["host"] {
+            guard let token = ProcessInfo.processInfo.environment["OFFLOAD_HOST_TOKEN"], !token.isEmpty else { fail("OFFLOAD_HOST_TOKEN is not set") }
+            err("offload mcp: relaying tool calls to the running Offload task")
+            await MCPBridge(client: try ToolHostClient(socketPath: socket, token: token)).runStdio()
+            return
+        }
         let rt = try Runtime()
         err("offload mcp: serving the knowledge base at \(rt.workspace.root.path) on stdio")
         await MCPServer(memory: rt.memory).runStdio()

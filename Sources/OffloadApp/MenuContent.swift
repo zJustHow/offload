@@ -5,7 +5,7 @@ struct MenuContent: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        if let error = model.startupError { Text(error).foregroundStyle(.red); Divider() }
+        if let error = model.startupError { Text(error).foregroundStyle(.primary); Divider() }
         Text(statusLine)
         Divider()
         Button("Ask or give a task…") { model.openAssistant() }.keyboardShortcut(" ", modifiers: [.command, .shift])

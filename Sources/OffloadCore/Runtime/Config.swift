@@ -9,10 +9,49 @@ public struct ModelProfile: Codable, Equatable, Sendable {
     /// Keychain account holding the API key (keys never live in the config file).
     public var keyAccount: String?
     public var vision: Bool?
+    /// Use the provider's native tool calling for the assistant. On by default for Anthropic; off
+    /// for OpenAI-compatible servers, where support depends on the model (set it when yours has it).
+    public var nativeTools: Bool?
+    /// Claude subscription only, and only used for answering questions: Claude may search and read the
+    /// knowledge base itself, through Offload's read-only MCP server, instead of only being handed excerpts.
+    public var memoryTools: Bool?
+    /// Claude subscription only, assistant role: Claude carries out the assistant's tasks itself, calling the same
+    /// tools the assistant has (notes, web, connected apps, operating the Mac) back in the app, which still decides
+    /// what runs, asks for approval and shows progress in the notch.
+    public var agentTools: Bool?
 
     public static let apple = ModelProfile(provider: .apple)
-    public init(provider: Provider, baseURL: String? = nil, model: String? = nil, keyAccount: String? = nil, vision: Bool? = nil) {
-        self.provider = provider; self.baseURL = baseURL; self.model = model; self.keyAccount = keyAccount; self.vision = vision
+    public init(provider: Provider, baseURL: String? = nil, model: String? = nil, keyAccount: String? = nil, vision: Bool? = nil, nativeTools: Bool? = nil, memoryTools: Bool? = nil, agentTools: Bool? = nil) {
+        self.provider = provider; self.baseURL = baseURL; self.model = model; self.keyAccount = keyAccount; self.vision = vision; self.nativeTools = nativeTools; self.memoryTools = memoryTools; self.agentTools = agentTools
+    }
+}
+
+/// What the assistant (the notch's Do mode and `offload agent`) may do. Defaults reproduce the
+/// original behaviour: look things up, operate the Mac, ask before anything irreversible.
+public struct AgentSettings: Codable, Equatable, Sendable {
+    /// Which tools run freely, which ask, which are refused. See `PermissionPolicy`.
+    public var permissions = PermissionPolicy(mode: .act)
+    /// Look around and show a plan first; act only once the user approves it.
+    public var planFirst = false
+    /// Lets the assistant read web pages and search the web. Off by default: what it asks for
+    /// leaves this Mac, and a page it reads is a way for someone else to talk to it.
+    public var webTools = false
+    public var webAllowedDomains: [String] = []
+    public var webBlockedDomains: [String] = []
+    /// Lets the assistant propose changes to notes (each one needs the user's approval).
+    public var noteEditing = true
+
+    public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AgentSettings()
+        permissions = try c.decodeIfPresent(PermissionPolicy.self, forKey: .permissions) ?? d.permissions
+        planFirst = try c.decodeIfPresent(Bool.self, forKey: .planFirst) ?? d.planFirst
+        webTools = try c.decodeIfPresent(Bool.self, forKey: .webTools) ?? d.webTools
+        webAllowedDomains = try c.decodeIfPresent([String].self, forKey: .webAllowedDomains) ?? d.webAllowedDomains
+        webBlockedDomains = try c.decodeIfPresent([String].self, forKey: .webBlockedDomains) ?? d.webBlockedDomains
+        noteEditing = try c.decodeIfPresent(Bool.self, forKey: .noteEditing) ?? d.noteEditing
     }
 }
 
@@ -55,6 +94,9 @@ public struct OffloadConfig: Codable, Equatable, Sendable {
     /// The first-run guide: where the user is, and whether they have finished (or skipped) it.
     public var onboardingStep = 0
     public var onboardingCompleted = false
+    /// Apps (MCP servers) the assistant can use. See `MCPServerConfig`.
+    public var mcpServers: [MCPServerConfig] = []
+    public var agent = AgentSettings()
 
     public init() {}
 
@@ -81,6 +123,8 @@ public struct OffloadConfig: Codable, Equatable, Sendable {
         liveSync = try c.decodeIfPresent(Bool.self, forKey: .liveSync) ?? d.liveSync
         onboardingStep = try c.decodeIfPresent(Int.self, forKey: .onboardingStep) ?? d.onboardingStep
         onboardingCompleted = try c.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? d.onboardingCompleted
+        mcpServers = try c.decodeIfPresent([MCPServerConfig].self, forKey: .mcpServers) ?? d.mcpServers
+        agent = try c.decodeIfPresent(AgentSettings.self, forKey: .agent) ?? d.agent
     }
 }
 

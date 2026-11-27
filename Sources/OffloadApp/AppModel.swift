@@ -57,6 +57,7 @@ final class AppModel: ObservableObject {
         notchController.install()
         notchController.onNotchClick = { [weak self] in self?.notch.present() }
         notch.onSubmit = { [weak self] text, mode in self?.runAssistant(text, mode: mode) }
+        notch.onDraftAction = { [weak self] action, text in self?.handleDraft(action, text) }
         notch.onStop = { [weak self] in self?.assistantTask?.cancel() }
         windows.onClose = { [weak self] id in self?.windowClosed(id) }
         wireHome()
@@ -186,23 +187,21 @@ final class AppModel: ObservableObject {
     func showKnowledge(select path: String? = nil) {
         knowledge.reload()
         if let path { knowledge.select(path) }
-        windows.show("knowledge", title: "Knowledge", size: CGSize(width: 980, height: 660), minSize: CGSize(width: 760, height: 480)) { KnowledgeView(model: knowledge) }
+        windows.show("knowledge", title: "Knowledge", size: CGSize(width: 1020, height: 680), immersive: true, minSize: CGSize(width: 800, height: 500)) { KnowledgeView(model: knowledge) }
     }
 
     func showSuggestions() {
         refreshCounts()
-        windows.show("suggestions", title: "Suggestions", size: CGSize(width: 640, height: 560), minSize: CGSize(width: 520, height: 400)) { SuggestionsView(model: self) }
+        windows.show("suggestions", title: "Suggestions", size: CGSize(width: 680, height: 600), immersive: true, minSize: CGSize(width: 540, height: 420)) { SuggestionsView(model: self) }
     }
 
     func showChatPicker() {
-        windows.show("chats", title: "Choose chats", size: CGSize(width: 520, height: 560), minSize: CGSize(width: 420, height: 380)) { ChatPickerView(model: self) }
+        windows.show("chats", title: "Choose chats", size: CGSize(width: 540, height: 600), immersive: true, minSize: CGSize(width: 440, height: 400)) { ChatPickerView(model: self) }
     }
 
     func openSettings(tab: SettingsTab? = nil) {
         if let tab { settingsTab = tab }
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        windows.show("settings", title: "Settings", size: SettingsView.size, immersive: true, resizable: false) { SettingsView(model: self) }
     }
 
     func openAssistant() { notch.present() }
@@ -248,6 +247,18 @@ final class AppModel: ObservableObject {
                     let answer = try await MemoryQA(memory: rt.memory, model: rt.assistantModel).ask(text)
                     if !Task.isCancelled { notch.finish(answer: answer.text, sources: answer.sources) }
                 } catch { AppLog.shared.error("question failed: \(error)"); if !Task.isCancelled { notch.fail(ErrorText.friendly(error)) } }
+            case .reply:
+                // Reading the screen needs Screen Recording; Accessibility is only needed later, to
+                // insert the draft, and without it the draft can still be copied.
+                guard ComputerPermissions.screenRecording else {
+                    ComputerPermissions.requestScreenRecording()
+                    notch.fail("To read the message on your screen I need Screen Recording permission. Allow it in System Settings, then try again.")
+                    return
+                }
+                do {
+                    let draft = try await draftReply(rt, instruction: text)
+                    if !Task.isCancelled { notch.finishDraft(draft.text, sources: Self.sourceNames(for: draft, in: rt)) }
+                } catch { AppLog.shared.error("reply draft failed: \(error)"); if !Task.isCancelled { notch.fail("Couldn't draft a reply: \(ErrorText.friendly(error))") } }
             case .act:
                 guard ComputerPermissions.screenRecording, ComputerPermissions.accessibility else {
                     ComputerPermissions.requestScreenRecording(); ComputerPermissions.requestAccessibility()
@@ -256,11 +267,19 @@ final class AppModel: ObservableObject {
                 }
                 edgeGlow.show()                       // the whole display glows while the assistant has the mouse
                 defer { edgeGlow.hide() }
-                let agent = Agent(
-                    model: rt.assistantModel, memory: rt.memory, computer: MacComputerController(),
-                    confirm: { [notch] description in await notch.requestConfirmation(description) })
+                let (agent, toolNotice) = await rt.makeAgent(
+                    computer: MacComputerController(),
+                    confirm: { [notch] description in await notch.requestConfirmation(description) },
+                    ask: { [notch] question in await notch.requestAnswer(question: question) },
+                    approval: { [notch] request in await notch.requestApproval(.init(request)) },
+                    askChoice: { [notch] question, options in await notch.requestAnswer(question: question, options: options) })
+                if let toolNotice { AppLog.shared.warning(toolNotice) }
                 let result = await agent.run(task: text) { [notch] event in
-                    if case .action(let a) = event { Task { @MainActor in notch.addStep(Dashboard.stepDescription(a)) } }
+                    switch event {
+                    case .action(let a): Task { @MainActor in notch.addStep(Dashboard.stepDescription(a)) }
+                    case .todos(let items): Task { @MainActor in notch.setChecklist(items.map(NotchModel.ChecklistItem.init)) }
+                    default: break
+                    }
                 }
                 if Task.isCancelled { return }
                 switch result.status {
@@ -291,11 +310,7 @@ final class AppModel: ObservableObject {
         notch.showBackground(status: "Drafting reply…")
         defer { if notch.phase == .compact { notch.dismiss() } }
         do {
-            let shot = try await MacComputerController().screenshot()
-            let visible = try OCR.recognize(imageData: shot)
-            let ws = rt.workspace
-            let drafter = ReplyDrafter(memory: rt.memory, model: rt.assistantModel, writingStyle: { WritingStyle.read(in: ws) })
-            let draft = try await drafter.draft(visibleText: visible, screenshot: shot)
+            let draft = try await draftReply(rt, instruction: nil)
             Paster.paste(draft.text)   // an unsent draft in the focused field; the user reviews and sends
         } catch {
             if notch.phase == .compact { notch.dismiss() }
@@ -303,9 +318,50 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Reads what is on screen (without the assistant's own windows in the picture) and drafts a
+    /// reply to it, guided by the user's instruction if they gave one.
+    private func draftReply(_ rt: Runtime, instruction: String?) async throws -> Draft {
+        let shot = try await MacComputerController(excludingOwnWindows: true).screenshot()
+        let visible = try OCR.recognize(imageData: shot)
+        let ws = rt.workspace
+        let drafter = ReplyDrafter(memory: rt.memory, model: rt.assistantModel, writingStyle: { WritingStyle.read(in: ws) })
+        return try await drafter.draft(visibleText: visible, screenshot: shot, instruction: instruction)
+    }
+
+    /// The names shown under a draft: the notes and the items it drew on.
+    private static func sourceNames(for draft: Draft, in rt: Runtime) -> [String] {
+        let items = draft.usedItems.compactMap { (try? rt.store.item(id: $0))?.title }
+        var seen = Set<String>()
+        return (draft.usedNotes + items).filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    /// Copy puts the draft on the clipboard. Insert pastes it into the field the user was in, once the
+    /// notch has let go of the keyboard; without Accessibility permission it falls back to the
+    /// clipboard (and asks for the permission), so the text is never lost.
+    private func handleDraft(_ action: NotchModel.DraftAction, _ text: String) {
+        switch action {
+        case .copy:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        case .insert:
+            guard ComputerPermissions.accessibility else {
+                ComputerPermissions.requestAccessibility()
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                return
+            }
+            // The notch is still the key window until its collapse animation ends (0.45 s); ⌘V sent
+            // before that would land on the notch instead of in the user's field.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 650_000_000)
+                Paster.paste(text)
+            }
+        }
+    }
+
     #if DEBUG
     /// Debug builds only: `OFFLOAD_DEBUG_NOTCH=input|thinking|answer` shows the notch a moment after
-    /// launch (without calling any model), and `OFFLOAD_DEBUG_WINDOW=home|onboarding|knowledge`
+    /// launch (without calling any model), and `OFFLOAD_DEBUG_WINDOW=home|onboarding|knowledge|suggestions|settings|chats`
     /// opens a window, so the real windows can be inspected.
     private func debugHooks() {
         let env = ProcessInfo.processInfo.environment
@@ -333,6 +389,8 @@ final class AppModel: ObservableObject {
                 case "onboarding": self?.showOnboarding()
                 case "knowledge": self?.showKnowledge()
                 case "suggestions": self?.showSuggestions()
+                case "settings": self?.openSettings()
+                case "chats": self?.showChatPicker()
                 default: break
                 }
             }

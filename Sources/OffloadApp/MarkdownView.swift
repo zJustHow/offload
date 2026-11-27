@@ -1,3 +1,4 @@
+import OffloadUI
 import SwiftUI
 
 /// A small Markdown renderer for the subset notes use: headings, bullets, quotes, code, paragraphs,
@@ -44,12 +45,13 @@ struct MarkdownView: View {
 
     @ViewBuilder private func row(_ b: Block) -> some View {
         switch b {
-        case .heading(let level, let t): inline(t).font(level == 1 ? .largeTitle.bold() : level == 2 ? .title2.bold() : .headline).padding(.top, level == 1 ? 0 : 6).accessibilityAddTraits(.isHeader)
-        case .bullet(let t): HStack(alignment: .firstTextBaseline, spacing: 8) { Text("•").foregroundStyle(.secondary); inline(t) }
-        case .quote(let t): HStack(spacing: 10) { Rectangle().fill(.tertiary).frame(width: 3); inline(t).foregroundStyle(.secondary) }
-        case .code(let t): Text(t).font(.system(.callout, design: .monospaced)).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        case .paragraph(let t): inline(t).lineSpacing(3)
-        case .rule: Divider()
+        // Plain, semibold headings and relaxed 15-pt body text, as in a ChatGPT answer.
+        case .heading(let level, let t): inline(t).font(.system(size: level == 1 ? 28 : level == 2 ? 21 : 17, weight: .semibold)).foregroundStyle(Theme.text).padding(.top, level == 1 ? 0 : 8).accessibilityAddTraits(.isHeader)
+        case .bullet(let t): HStack(alignment: .firstTextBaseline, spacing: 10) { Text("•").foregroundStyle(Theme.tertiary); inline(t).font(.system(size: 15)).foregroundStyle(Theme.text).lineSpacing(4) }
+        case .quote(let t): HStack(spacing: 12) { Capsule().fill(Theme.borderStrong).frame(width: 3); inline(t).font(.system(size: 15)).foregroundStyle(Theme.secondary).lineSpacing(4) }
+        case .code(let t): Text(t).font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.text).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        case .paragraph(let t): inline(t).font(.system(size: 15)).foregroundStyle(Theme.text).lineSpacing(5)
+        case .rule: Divider().overlay(Theme.border)
         }
     }
 

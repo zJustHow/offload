@@ -12,7 +12,7 @@ public struct OnboardingView: View {
 
     public var body: some View {
         ZStack {
-            IntelligenceBackground(phase: fixedPhase)
+            AppBackground()
             VStack(spacing: 0) {
                 header
                 content
@@ -23,9 +23,9 @@ public struct OnboardingView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 footer
             }
-            .padding(.horizontal, 44).padding(.vertical, 26)
+            .padding(.horizontal, 56).padding(.vertical, 26)
         }
-        .animation(intelligentAnimation(IntelligenceStyle.expressive, reduceMotion: reduceMotion), value: model.step)
+        .animation(intelligentAnimation(.easeOut(duration: 0.28), reduceMotion: reduceMotion), value: model.step)
         .frame(width: Self.size.width, height: Self.size.height)
         .environment(\.colorScheme, .dark)
     }
@@ -36,7 +36,7 @@ public struct OnboardingView: View {
         HStack {
             StepDots(count: OnboardingModel.Step.allCases.count, current: model.step.rawValue)
             Spacer()
-            if model.step != .done { Button("Skip setup") { model.skipAll() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.tertiary) }
+            if model.step != .done { Button("Skip setup") { model.skipAll() }.buttonStyle(.plain).font(.system(size: 13)).foregroundStyle(Theme.secondary) }
         }
         .frame(height: 24)
     }
@@ -74,7 +74,7 @@ private struct ScreenTitle: View {
     var title: String, subtitle: String
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            GradientText(title, size: 30)
+            Heading(title, size: 28)
             Text(subtitle).font(.system(size: 15)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -87,12 +87,9 @@ private struct WelcomeScreen: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 4)
-            ZStack {
-                AnimatedGlow(shape: Circle(), intensity: 0.9, lineWidth: 2).frame(width: 118, height: 118).opacity(0.85)
-                IntelligenceOrb(size: 96, phase: fixedPhase)
-            }.frame(height: 130)
+            AppMark(size: 64)
             VStack(spacing: 10) {
-                GradientText("Hello, I'm Offload.", size: 38)
+                Heading("Hello, I'm Offload.", size: 34)
                 Text("I read the things you already keep on this Mac, turn them into notes you can read, and help with whatever you ask. Let's set me up.")
                     .font(.system(size: 15)).foregroundStyle(Theme.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
             }
@@ -101,7 +98,7 @@ private struct WelcomeScreen: View {
                 feature("doc.text", "Notes you own", "Everything becomes plain Markdown that you can open, edit and keep.")
                 feature("sparkles", "Ask, or hand it off", "Click the notch to ask a question or give me a task.")
             }
-            .padding(14).glassCard(cornerRadius: 16).frame(maxWidth: 560)
+            .padding(16).surfaceCard().frame(maxWidth: 560)
             Spacer(minLength: 0)
         }
     }
@@ -110,7 +107,7 @@ private struct WelcomeScreen: View {
         HStack(spacing: 14) {
             SymbolBadge(symbol, size: 36)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
                 Text(detail).font(.system(size: 13)).foregroundStyle(Theme.secondary)
             }
             Spacer()
@@ -127,7 +124,7 @@ private struct SourcesScreen: View {
                 VStack(spacing: 8) { ForEach(model.sources) { row($0) } }.padding(.vertical, 2)
             }
             if model.chosenSources.isEmpty {
-                Text("Choose at least one to continue.").font(.system(size: 12)).foregroundStyle(Theme.warn).padding(.top, 8)
+                Text("Choose at least one to continue.").font(.system(size: 13)).foregroundStyle(Theme.secondary).padding(.top, 8)
             }
         }
     }
@@ -144,10 +141,10 @@ private struct SourcesScreen: View {
         HStack(spacing: 14) {
             SymbolBadge(s.symbol)
             VStack(alignment: .leading, spacing: 2) {
-                Text(s.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                Text(s.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
                 Text(s.subtitle).font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
-                    if let d = s.detail { Text(d).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.good) }
+                    if let d = s.detail { Text(d).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.secondary) }
                     if s.needsFullDiskAccess { Label("Needs Full Disk Access", systemImage: "lock").font(.system(size: 11)).foregroundStyle(Theme.tertiary) }
                 }
             }
@@ -159,8 +156,8 @@ private struct SourcesScreen: View {
                 Button(buttonTitle(s)) { model.onConfigureSource?(s.id) }.buttonStyle(QuietButtonStyle())
             }
         }
-        .padding(12).glassCard(cornerRadius: 14)
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(s.isOn ? Color(hex: 0xBC82F3).opacity(0.6) : .clear, lineWidth: 1.2))
+        .padding(14).surfaceCard()
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(s.isOn ? Theme.borderStrong : .clear, lineWidth: 1))
         .accessibilityElement(children: .contain)
     }
 }
@@ -182,13 +179,13 @@ private struct PermissionsScreen: View {
         }
     }
 
-    private func section(_ t: String) -> some View { Text(t.uppercased()).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.tertiary).padding(.leading, 4) }
+    private func section(_ t: String) -> some View { Text(t).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.secondary).padding(.leading, 4) }
 
     private func row(_ p: PermissionRow) -> some View {
         HStack(spacing: 14) {
             SymbolBadge(p.symbol)
             VStack(alignment: .leading, spacing: 2) {
-                Text(p.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                Text(p.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
                 Text(p.detail).font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
@@ -197,7 +194,7 @@ private struct PermissionsScreen: View {
                 Button("Open Settings") { model.onRequestPermission?(p.id); model.onOpenSettings?(url) }.buttonStyle(QuietButtonStyle())
             } else { Button("Allow") { model.onRequestPermission?(p.id) }.buttonStyle(QuietButtonStyle()) }
         }
-        .padding(12).glassCard(cornerRadius: 14)
+        .padding(14).surfaceCard()
     }
 }
 
@@ -214,19 +211,19 @@ private struct ModelsScreen: View {
         let selected = model.selectedModel == m.id
         return Button { model.select(model: m.id) } label: {
             HStack(spacing: 14) {
-                Image(systemName: selected ? "largecircle.fill.circle" : "circle").font(.system(size: 18)).foregroundStyle(selected ? Color(hex: 0xBC82F3) : Theme.tertiary)
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle").font(.system(size: 18)).foregroundStyle(selected ? Theme.text : Theme.tertiary)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
-                        Text(m.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                        if let b = m.badge { Text(b).font(.system(size: 10, weight: .bold)).padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Theme.gradient)).foregroundStyle(.black.opacity(0.8)) }
+                        Text(m.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
+                        if let b = m.badge { Text(b).font(.system(size: 11, weight: .medium)).padding(.horizontal, 8).padding(.vertical, 2).background(Capsule().fill(Theme.surfaceRaised)).foregroundStyle(Theme.text) }
                     }
                     Text(m.subtitle).font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
-                    Text(m.statusText).font(.system(size: 11, weight: .medium)).foregroundStyle(m.readiness == .ready ? Theme.good : m.readiness == .needsSetup ? Theme.warn : Color(hex: 0xFF6778))
+                    Text(m.statusText).font(.system(size: 11, weight: .medium)).foregroundStyle(m.readiness == .ready ? Theme.secondary : m.readiness == .needsSetup ? Theme.text : Theme.tertiary)
                 }
                 Spacer()
             }
-            .padding(12).frame(maxWidth: .infinity, alignment: .leading).glassCard(cornerRadius: 14)
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(selected ? Color(hex: 0xBC82F3).opacity(0.7) : .clear, lineWidth: 1.4))
+            .padding(14).frame(maxWidth: .infinity, alignment: .leading).surfaceCard()
+            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(selected ? Theme.text.opacity(0.7) : .clear, lineWidth: 1.2))
             .opacity(m.readiness == .unavailable ? 0.5 : 1)
         }
         .buttonStyle(.plain)
@@ -252,12 +249,12 @@ private struct PrivacyScreen: View {
         HStack(spacing: 14) {
             SymbolBadge(symbol)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
                 Text(detail).font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
         }
-        .padding(12).glassCard(cornerRadius: 14)
+        .padding(14).surfaceCard()
     }
 }
 
@@ -270,35 +267,35 @@ private struct AnalyzeScreen: View {
             Spacer(minLength: 0)
             switch a.phase {
             case .idle:
-                IntelligenceOrb(size: 72, phase: fixedPhase)
+                AppMark(size: 56)
                 VStack(spacing: 8) {
-                    GradientText("Ready to read", size: 30)
+                    Heading("Ready to read", size: 28)
                     Text("I'll go through \(model.chosenSources.count == 1 ? "your chosen source" : "\(model.chosenSources.count) sources"), one item at a time, on this Mac. The first pass can take a while; you can keep using your Mac.")
                         .font(.system(size: 15)).foregroundStyle(Theme.secondary).multilineTextAlignment(.center).frame(maxWidth: 480)
                 }
-                HStack { ForEach(model.chosenSources.prefix(5)) { s in Label(s.title, systemImage: s.symbol).font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 5).background(Capsule().fill(.white.opacity(0.1))).foregroundStyle(.white.opacity(0.85)) } }
+                HStack { ForEach(model.chosenSources.prefix(5)) { s in Label(s.title, systemImage: s.symbol).font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 5).background(Capsule().fill(Theme.surface)).foregroundStyle(Theme.text) } }
             case .running:
-                IntelligenceOrb(size: 64, phase: fixedPhase)
+                ThinkingDot(size: 14, phase: fixedPhase)
                 VStack(spacing: 6) {
                     ShimmerText(a.source.map { "Reading \($0)" } ?? a.stage, font: .system(size: 20, weight: .semibold), phase: fixedPhase)
                     if a.total > 0 { Text("\(a.done) of \(a.total)").font(.system(size: 13)).foregroundStyle(Theme.secondary).contentTransition(.numericText()) }
                     if let t = a.currentTitle { Text(t).font(.system(size: 12)).foregroundStyle(Theme.tertiary).lineLimit(1).frame(maxWidth: 420) }
                 }
-                GradientProgress(a.fraction).frame(maxWidth: 440)
+                ProgressBar(a.fraction).frame(maxWidth: 440)
                 counters(a)
                 HStack(spacing: 12) {
                     Button("Stop") { model.onStopAnalysis?() }.buttonStyle(QuietButtonStyle())
                 }
                 Text("You don't have to wait here. I'll carry on in the background.").font(.system(size: 12)).foregroundStyle(Theme.tertiary)
             case .finished, .stopped:
-                Image(systemName: a.phase == .finished ? "checkmark.circle.fill" : "pause.circle.fill").font(.system(size: 52)).foregroundStyle(a.phase == .finished ? Theme.good : Theme.warn)
+                Image(systemName: a.phase == .finished ? "checkmark.circle.fill" : "pause.circle.fill").font(.system(size: 48)).foregroundStyle(Theme.text)
                 VStack(spacing: 6) {
-                    GradientText(a.phase == .finished ? "All read" : "Paused", size: 30)
+                    Heading(a.phase == .finished ? "All read" : "Paused", size: 28)
                     Text(a.phase == .finished ? "I read \(a.kept) items and wrote \(a.notes) notes." : "I read \(a.kept) items so far. I'll pick up where I left off next time.")
                         .font(.system(size: 15)).foregroundStyle(Theme.secondary)
                 }
                 counters(a)
-                ForEach(a.warnings.prefix(2), id: \.self) { w in Label(w, systemImage: "exclamationmark.triangle").font(.system(size: 12)).foregroundStyle(Theme.warn).frame(maxWidth: 480, alignment: .leading) }
+                ForEach(a.warnings.prefix(2), id: \.self) { w in Label(w, systemImage: "exclamationmark.triangle").font(.system(size: 12)).foregroundStyle(Theme.secondary).frame(maxWidth: 480, alignment: .leading) }
             }
             Spacer(minLength: 0)
         }
@@ -315,8 +312,8 @@ private struct DoneScreen: View {
     var body: some View {
         VStack(spacing: 20) {
             Spacer(minLength: 0)
-            IntelligenceOrb(size: 64)
-            GradientText("You're all set.", size: 36)
+            AppMark(size: 56)
+            Heading("You're all set.", size: 34)
             Text("Here is how to reach me.").font(.system(size: 15)).foregroundStyle(Theme.secondary)
             VStack(spacing: 10) {
                 tip("rectangle.topthird.inset.filled", "Click the notch", "or press ⌘⇧Space. Ask a question, or give me a task to do.")
@@ -324,7 +321,7 @@ private struct DoneScreen: View {
                 tip("books.vertical", "Open Knowledge", "to read, search and edit your notes, or see how they connect.")
                 tip("sparkles", "The ✦ in your menu bar", "has everything else: analyze now, suggestions, settings.")
             }
-            .padding(14).glassCard(cornerRadius: 16).frame(maxWidth: 560)
+            .padding(16).surfaceCard().frame(maxWidth: 560)
             Spacer(minLength: 0)
         }
     }
@@ -333,7 +330,7 @@ private struct DoneScreen: View {
         HStack(spacing: 14) {
             SymbolBadge(symbol, size: 34)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
                 Text(detail).font(.system(size: 12)).foregroundStyle(Theme.secondary)
             }
             Spacer()
